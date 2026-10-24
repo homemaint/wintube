@@ -635,7 +635,8 @@ impl WinTubeApp {
         );
         self.active_video = Some(bundle);
         self.active_tab = ActiveNavTab::NowPlaying;
-        Task::none()
+        // Automatically launch hardware-accelerated video viewport!
+        self.update(Message::LaunchExternalHardwareViewport)
     }
 
     fn handle_key_press(&mut self, key: Key) -> Task<Message> {
@@ -665,7 +666,7 @@ impl WinTubeApp {
                 return self.update(Message::ChangeSpeed(next_speed));
             }
 
-            // Spatial D-Pad / Arrow Key Navigation (especially for TV Couch Mode)
+            // Spatial D-Pad / Arrow Key Navigation
             Key::Named(Named::ArrowRight) => {
                 if self.active_tab == ActiveNavTab::NowPlaying {
                     return self.update(Message::SeekRelative(5.0));
@@ -691,9 +692,9 @@ impl WinTubeApp {
                 let step = if self.form_factor == UiFormFactor::TvCouch { 2 } else { 3 };
                 self.focused_card_index = self.focused_card_index.saturating_sub(step);
             }
+            // Enter key selects focused video in BOTH Desktop and TV mode!
             Key::Named(Named::Enter)
-                if (self.active_tab == ActiveNavTab::Home || self.active_tab == ActiveNavTab::Search)
-                    && self.form_factor == UiFormFactor::TvCouch =>
+                if self.active_tab == ActiveNavTab::Home || self.active_tab == ActiveNavTab::Search =>
             {
                 if let Some(card) = self.feed_videos.get(self.focused_card_index) {
                     return self.update(Message::SelectVideo(card.video_id.clone()));
@@ -944,7 +945,14 @@ impl WinTubeApp {
                 .padding(14);
 
                 row_widget = row_widget.push(
-                    container(card_content)
+                    button(card_content)
+                        .on_press(Message::SelectVideo(video.video_id.clone()))
+                        .padding(0)
+                        .style(if is_focused {
+                            button::success
+                        } else {
+                            button::secondary
+                        })
                         .width(Length::FillPortion(1)),
                 );
             }
@@ -967,15 +975,27 @@ impl WinTubeApp {
         let Some(ref bundle) = self.active_video else {
             return container(
                 column![
-                    text("No video currently playing.").size(20),
-                    text("Select any video from Home or Search to begin ad-free 4K60 playback.")
-                        .size(14)
-                        .color(Color::from_rgb(0.6, 0.65, 0.75)),
-                    button(text("Browse Home Feed").size(15))
-                        .on_press(Message::SwitchTab(ActiveNavTab::Home))
-                        .padding(10),
+                    text("⏳ Resolving 4K/8K DASH Streams & SponsorBlock...")
+                        .size(22)
+                        .color(Color::from_rgb(0.3, 0.95, 0.6)),
+                    text(&self.status_banner)
+                        .size(15)
+                        .color(Color::from_rgb(0.7, 0.8, 0.9)),
+                    text("Decoupling adaptive video + high-bitrate Opus streams via Innertube engine...")
+                        .size(13)
+                        .color(Color::from_rgb(0.5, 0.6, 0.7)),
+                    horizontal_rule(1),
+                    row![
+                        button(text("← Back to Browse Feed").size(14))
+                            .on_press(Message::SwitchTab(ActiveNavTab::Home))
+                            .padding([8, 16]),
+                        button(text("Force Launch Viewport").size(14))
+                            .on_press(Message::LaunchExternalHardwareViewport)
+                            .padding([8, 16]),
+                    ]
+                    .spacing(12),
                 ]
-                .spacing(12)
+                .spacing(16)
                 .align_x(Alignment::Center),
             )
             .width(Length::Fill)

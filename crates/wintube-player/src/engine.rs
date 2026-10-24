@@ -95,7 +95,7 @@ impl MediaEngine {
         let speed = guard.speed;
         let normalize = guard.audio_normalization;
 
-        // 1. Try mpv first (supports --audio-file for 4K60/8K adaptive streams + D3D11VA + scaletempo2)
+        // 1. Try mpv / mpvnet first (supports --audio-file for 4K60/8K adaptive streams + D3D11VA + scaletempo2)
         if let Some(mpv_bin) = find_binary("mpv.exe") {
             let mut cmd = Command::new(&mpv_bin);
             cmd.arg(&video_url)
@@ -122,7 +122,38 @@ impl MediaEngine {
             return Ok("mpv (Direct3D11VA Zero-Copy Hardware Decoder)".to_string());
         }
 
-        // 2. Fallback to ffplay (installed via WinGet on this PC)
+        // 2. Try VLC Media Player (supports --input-slave for separate video+audio muxing + D3D11)
+        if let Some(vlc_bin) = find_binary("vlc.exe") {
+            let mut cmd = Command::new(&vlc_bin);
+            cmd.arg(&video_url)
+                .arg(format!("--meta-title=WinTube - {}", title))
+                .arg(format!("--start-time={:.1}", pos))
+                .arg("--play-and-exit");
+
+            if let Some(ref aud) = audio_url {
+                cmd.arg(format!("--input-slave={}", aud));
+            }
+
+            let child = cmd.spawn()?;
+            guard.child_process = Some(child);
+            return Ok("VLC Media Player (Direct3D11 Hardware Viewport)".to_string());
+        }
+
+        // 3. Try MPC-HC (Media Player Classic 64-bit with K-Lite LAV D3D11 Decoder)
+        if let Some(mpc_bin) = find_binary("mpc-hc64.exe").or_else(|| find_binary("mpc-hc.exe")) {
+            let mut cmd = Command::new(&mpc_bin);
+            let start_ms = (pos * 1000.0) as u64;
+            cmd.arg(&video_url)
+                .arg("/play")
+                .arg("/start")
+                .arg(start_ms.to_string());
+
+            let child = cmd.spawn()?;
+            guard.child_process = Some(child);
+            return Ok("Media Player Classic (K-Lite D3D11 Hardware Viewport)".to_string());
+        }
+
+        // 4. Fallback to ffplay (if installed and valid)
         if let Some(ffplay_bin) = find_binary("ffplay.exe") {
             let mut cmd = Command::new(&ffplay_bin);
             cmd.arg("-window_title")
@@ -142,7 +173,15 @@ impl MediaEngine {
             return Ok("FFmpeg/ffplay Hardware-Accelerated Viewport".to_string());
         }
 
-        Err(anyhow::anyhow!("Neither mpv.exe nor ffplay.exe found in PATH"))
+        // 5. Fallback: Launch stream via Windows Default Shell Association
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "start", "", &video_url])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = cmd.spawn()?;
+        guard.child_process = Some(child);
+        Ok("Default Windows Player / Browser Stream Viewport".to_string())
     }
 
     pub fn toggle_play_pause(&self) -> PlaybackState {
@@ -222,21 +261,89 @@ impl MediaEngine {
 }
 
 fn find_binary(name: &str) -> Option<PathBuf> {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let winget_link = PathBuf::from(&local_app_data)
-            .join("Microsoft")
-            .join("WinGet")
-            .join("Links")
-            .join(name);
-        if winget_link.exists() {
-            return Some(winget_link);
+    // 1. Direct workspace / relative bin/ directories
+    let local_search_dirs = [
+        PathBuf::from(r"D:\My Projects\Wintube\bin\mpv"),
+        PathBuf::from(r"D:\My Projects\Wintube\bin"),
+        PathBuf::from("bin").join("mpv"),
+        PathBuf::from("bin"),
+        PathBuf::from("."),
+    ];
+
+    for dir in &local_search_dirs {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            if let Ok(meta) = candidate.metadata() {
+                if meta.len() > 0 {
+                    return Some(candidate);
+                }
+            }
         }
     }
+
+    // 2. Executable parent directory bin/
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            for sub in &["bin/mpv", "bin", "."] {
+                let candidate = parent.join(sub).join(name);
+                if candidate.is_file() {
+                    if let Ok(meta) = candidate.metadata() {
+                        if meta.len() > 0 {
+                            return Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Known installation directories (VLC, MPC-HC, mpv, WinGet)
+    let program_files = [
+        r"C:\Program Files\VideoLAN\VLC",
+        r"C:\Program Files (x86)\VideoLAN\VLC",
+        r"C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64",
+        r"C:\Program Files\K-Lite Codec Pack\MPC-HC64",
+        r"C:\Program Files\MPC-HC",
+        r"C:\Program Files (x86)\MPC-HC",
+    ];
+    for base in &program_files {
+        let candidate = PathBuf::from(base).join(name);
+        if candidate.is_file() {
+            if let Ok(meta) = candidate.metadata() {
+                if meta.len() > 0 {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let candidates = [
+            PathBuf::from(&local_app_data).join("Programs").join("mpv").join(name),
+            PathBuf::from(&local_app_data).join("Programs").join("mpv.net").join(name),
+            PathBuf::from(&local_app_data).join("Microsoft").join("WinGet").join("Links").join(name),
+        ];
+        for candidate in &candidates {
+            if candidate.is_file() {
+                if let Ok(meta) = candidate.metadata() {
+                    if meta.len() > 0 {
+                        return Some(candidate.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. PATH entries (verifying file exists and is not a 0-byte broken link)
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate);
+            if candidate.is_file() {
+                if let Ok(meta) = candidate.metadata() {
+                    if meta.len() > 0 {
+                        return Some(candidate);
+                    }
+                }
             }
         }
     }
