@@ -1,0 +1,8 @@
+target/
+**/*.rs.bk
+*.pdb
+*.dll
+*.exe
+.env
+.idea/
+.vscode/

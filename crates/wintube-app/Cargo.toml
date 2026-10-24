@@ -1,0 +1,20 @@
+[package]
+name = "wintube-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wintube-innertube = { path = "../wintube-innertube" }
+wintube-services = { path = "../wintube-services" }
+wintube-player = { path = "../wintube-player" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[[bin]]
+name = "wintube"
+path = "src/main.rs"

@@ -1,0 +1,21 @@
+[package]
+name = "wintube-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wintube-innertube = { path = "../wintube-innertube" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Media_Playback",
+    "Media_Control",
+    "Storage_Streams"
+] }
