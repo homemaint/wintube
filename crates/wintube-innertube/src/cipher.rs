@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use regex::Regex;
-use tracing::{debug, warn};
 use url::form_urlencoded;
 
 /// Cipher and n-parameter signature decryptor.
@@ -8,13 +6,13 @@ use url::form_urlencoded;
 /// via base.js functions extracted from YouTube's web player.
 #[derive(Debug, Default)]
 pub struct CipherEngine {
-    cached_player_id: Option<String>,
+    _cached_player_id: Option<String>,
 }
 
 impl CipherEngine {
     pub fn new() -> Self {
         Self {
-            cached_player_id: None,
+            _cached_player_id: None,
         }
     }
 

@@ -8,6 +8,7 @@ pub enum VideoCodecPreference {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
 pub enum MaxResolution {
     Res720p,
     Res1080p,

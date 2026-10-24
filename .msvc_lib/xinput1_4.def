@@ -1,0 +1,10 @@
+LIBRARY xinput1_4
+EXPORTS
+  DllMain
+  XInputEnable
+  XInputGetAudioDeviceIds
+  XInputGetBatteryInformation
+  XInputGetCapabilities
+  XInputGetKeystroke
+  XInputGetState
+  XInputSetState

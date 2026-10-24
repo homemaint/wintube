@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 const RYD_API_BASE: &str = "https://returnyoutubedislikeapi.com";
 

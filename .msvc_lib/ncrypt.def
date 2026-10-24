@@ -1,0 +1,164 @@
+LIBRARY ncrypt
+EXPORTS
+  BCryptAddContextFunction = BCRYPT.BCryptAddContextFunction
+  BCryptAddContextFunctionProvider = BCRYPT.BCryptAddContextFunctionProvider
+  BCryptCloseAlgorithmProvider = BCRYPT.BCryptCloseAlgorithmProvider
+  BCryptConfigureContext = BCRYPT.BCryptConfigureContext
+  BCryptConfigureContextFunction = BCRYPT.BCryptConfigureContextFunction
+  BCryptCreateContext = BCRYPT.BCryptCreateContext
+  BCryptCreateHash = BCRYPT.BCryptCreateHash
+  BCryptCreateMultiHash = BCRYPT.BCryptCreateMultiHash
+  BCryptDecapsulate = BCRYPT.BCryptDecapsulate
+  BCryptDecrypt = BCRYPT.BCryptDecrypt
+  BCryptDeleteContext = BCRYPT.BCryptDeleteContext
+  BCryptDeriveKey = BCRYPT.BCryptDeriveKey
+  BCryptDeriveKeyCapi = BCRYPT.BCryptDeriveKeyCapi
+  BCryptDeriveKeyPBKDF2 = BCRYPT.BCryptDeriveKeyPBKDF2
+  BCryptDestroyHash = BCRYPT.BCryptDestroyHash
+  BCryptDestroyKey = BCRYPT.BCryptDestroyKey
+  BCryptDestroySecret = BCRYPT.BCryptDestroySecret
+  BCryptDuplicateHash = BCRYPT.BCryptDuplicateHash
+  BCryptDuplicateKey = BCRYPT.BCryptDuplicateKey
+  BCryptEncapsulate = BCRYPT.BCryptEncapsulate
+  BCryptEncrypt = BCRYPT.BCryptEncrypt
+  BCryptEnumAlgorithms = BCRYPT.BCryptEnumAlgorithms
+  BCryptEnumContextFunctionProviders = BCRYPT.BCryptEnumContextFunctionProviders
+  BCryptEnumContextFunctions = BCRYPT.BCryptEnumContextFunctions
+  BCryptEnumContexts = BCRYPT.BCryptEnumContexts
+  BCryptEnumProviders = BCRYPT.BCryptEnumProviders
+  BCryptEnumRegisteredProviders = BCRYPT.BCryptEnumRegisteredProviders
+  BCryptExportKey = BCRYPT.BCryptExportKey
+  BCryptFinalizeKeyPair = BCRYPT.BCryptFinalizeKeyPair
+  BCryptFinishHash = BCRYPT.BCryptFinishHash
+  BCryptFreeBuffer = BCRYPT.BCryptFreeBuffer
+  BCryptGenRandom = BCRYPT.BCryptGenRandom
+  BCryptGenerateKeyPair = BCRYPT.BCryptGenerateKeyPair
+  BCryptGenerateSymmetricKey = BCRYPT.BCryptGenerateSymmetricKey
+  BCryptGetFipsAlgorithmMode = BCRYPT.BCryptGetFipsAlgorithmMode
+  BCryptGetProperty = BCRYPT.BCryptGetProperty
+  BCryptHash = BCRYPT.BCryptHash
+  BCryptHashData = BCRYPT.BCryptHashData
+  BCryptImportKey = BCRYPT.BCryptImportKey
+  BCryptImportKeyPair = BCRYPT.BCryptImportKeyPair
+  BCryptKeyDerivation = BCRYPT.BCryptKeyDerivation
+  BCryptOpenAlgorithmProvider = BCRYPT.BCryptOpenAlgorithmProvider
+  BCryptProcessMultiOperations = BCRYPT.BCryptProcessMultiOperations
+  BCryptQueryContextConfiguration = BCRYPT.BCryptQueryContextConfiguration
+  BCryptQueryContextFunctionConfiguration = BCRYPT.BCryptQueryContextFunctionConfiguration
+  BCryptQueryContextFunctionProperty = BCRYPT.BCryptQueryContextFunctionProperty
+  BCryptQueryProviderRegistration = BCRYPT.BCryptQueryProviderRegistration
+  BCryptRegisterConfigChangeNotify = BCRYPT.BCryptRegisterConfigChangeNotify
+  BCryptRegisterProvider = BCRYPT.BCryptRegisterProvider
+  BCryptRemoveContextFunction = BCRYPT.BCryptRemoveContextFunction
+  BCryptRemoveContextFunctionProvider = BCRYPT.BCryptRemoveContextFunctionProvider
+  BCryptResolveProviders = BCRYPT.BCryptResolveProviders
+  BCryptSecretAgreement = BCRYPT.BCryptSecretAgreement
+  BCryptSetAuditingInterface = BCRYPT.BCryptSetAuditingInterface
+  BCryptSetContextFunctionProperty = BCRYPT.BCryptSetContextFunctionProperty
+  BCryptSetProperty = BCRYPT.BCryptSetProperty
+  BCryptSignHash = BCRYPT.BCryptSignHash
+  BCryptUnregisterConfigChangeNotify = BCRYPT.BCryptUnregisterConfigChangeNotify
+  BCryptUnregisterProvider = BCRYPT.BCryptUnregisterProvider
+  BCryptVerifySignature = BCRYPT.BCryptVerifySignature
+  GetIsolationServerInterface
+  GetKeyStorageInterface
+  GetSChannelInterface
+  NCryptCloseKeyProtector
+  NCryptCloseProtectionDescriptor
+  NCryptCreateClaim
+  NCryptCreatePersistedKey
+  NCryptCreateProtectionDescriptor
+  NCryptDecapsulate
+  NCryptDecrypt
+  NCryptDeleteKey
+  NCryptDeriveKey
+  NCryptDuplicateKeyProtectorHandle
+  NCryptEncapsulate
+  NCryptEncrypt
+  NCryptEnumAlgorithms
+  NCryptEnumKeys
+  NCryptEnumStorageProviders
+  NCryptExportKey
+  NCryptFinalizeKey
+  NCryptFreeBuffer
+  NCryptFreeObject
+  NCryptGetProperty
+  NCryptGetProtectionDescriptorInfo
+  NCryptImportKey
+  NCryptIsAlgSupported
+  NCryptIsKeyHandle
+  NCryptKeyDerivation
+  NCryptNotifyChangeKey
+  NCryptOpenKey
+  NCryptOpenKeyProtector
+  NCryptOpenStorageProvider
+  NCryptProtectKey
+  NCryptProtectSecret
+  NCryptQueryProtectionDescriptorName
+  NCryptRegisterProtectionDescriptorName
+  NCryptSecretAgreement
+  NCryptSetAuditingInterface
+  NCryptSetProperty
+  NCryptSignHash
+  NCryptStreamClose
+  NCryptStreamOpenToProtect
+  NCryptStreamOpenToUnprotect
+  NCryptStreamOpenToUnprotectEx
+  NCryptStreamUpdate
+  NCryptTranslateHandle
+  NCryptUnprotectKey
+  NCryptUnprotectSecret
+  NCryptVerifyClaim
+  NCryptVerifySignature
+  SslChangeNotify
+  SslCombineKeys
+  SslComputeClientAuthHash
+  SslComputeEapKeyBlock
+  SslComputeFinishedHash
+  SslComputeSessionHash
+  SslCreateClientAuthHash
+  SslCreateEphemeralKey
+  SslCreateHandshakeHash
+  SslDecrementProviderReferenceCount
+  SslDecryptPacket
+  SslDeriveSessionTicketKey
+  SslDuplicateTranscriptHash
+  SslEncryptPacket
+  SslEnumCipherSuites
+  SslEnumCipherSuitesEx
+  SslEnumEccCurves
+  SslEnumGroups
+  SslEnumProtocolProviders
+  SslExpandBinderKey
+  SslExpandExporterMasterKey
+  SslExpandNextGenTrafficKey
+  SslExpandPreSharedKey
+  SslExpandResumptionMasterKey
+  SslExpandTrafficKeys
+  SslExpandWriteKey
+  SslExportKey
+  SslExportKeyingMaterial
+  SslExtractEarlyKey
+  SslExtractHandshakeKey
+  SslExtractMasterKey
+  SslFreeBuffer
+  SslFreeObject
+  SslGenerateMasterKey
+  SslGeneratePreMasterKey
+  SslGenerateSessionKeys
+  SslGetCipherSuitePRFHashAlgorithm
+  SslGetKeyProperty
+  SslGetProviderProperty
+  SslGetSessionTicketProtectionHeaderSize
+  SslHashHandshake
+  SslImportKey
+  SslImportMasterKey
+  SslIncrementProviderReferenceCount
+  SslLookupCipherLengths
+  SslLookupCipherSuiteInfo
+  SslOpenPrivateKey
+  SslOpenProvider
+  SslProtectSessionTicket
+  SslSignHash
+  SslUnprotectSessionTicket
+  SslVerifySignature

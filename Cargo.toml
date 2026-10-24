@@ -28,3 +28,5 @@ regex = "1.10"
 sha2 = "0.10"
 hex = "0.4"
 redb = "2.4"
+iced = { version = "0.13", features = ["tokio", "image", "advanced"] }
+

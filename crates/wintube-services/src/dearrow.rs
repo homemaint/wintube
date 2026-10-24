@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 const DEARROW_API_BASE: &str = "https://dearrow.ajay.app/api";
 

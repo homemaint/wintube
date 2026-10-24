@@ -1,0 +1,20 @@
+LIBRARY dcomp.dll
+EXPORTS
+  CreatePresentationFactory
+  DCompositionAttachMouseDragToHwnd
+  DCompositionAttachMouseWheelToHwnd
+  DCompositionBoostCompositorClock
+  DCompositionCreateDevice
+  DCompositionCreateDevice2
+  DCompositionCreateDevice3
+  DCompositionCreateSurfaceHandle
+  DCompositionGetFrameId
+  DCompositionGetStatistics
+  DCompositionGetTargetStatistics
+  DCompositionWaitForCompositorClock
+  DllCanUnloadNow
+  DllGetActivationFactory
+  DllGetClassObject
+  DwmEnableMMCSS
+  DwmFlush
+  DwmpEnableDDASupport

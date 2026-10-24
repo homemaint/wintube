@@ -1,15 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT, REFERER};
 use serde_json::{json, Value};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, warn};
 
 use crate::client::AppClient;
 use crate::cipher::CipherEngine;
-use crate::dash::DashManifestBuilder;
 use crate::models::{
-    ByteRange, CaptionTrack, FormatStream, InnertubeContext, PlayerResponse,
-    ResolvedStream, VideoDetails, VideoMetadata, VideoPlaybackInfo,
+    PlayerResponse, ResolvedStream, VideoCardItem, VideoMetadata, VideoNextDetails, VideoPlaybackInfo,
 };
 
 const INNERTUBE_API_BASE: &str = "https://www.youtube.com/youtubei/v1";
@@ -271,6 +268,182 @@ impl InnertubeClient {
         let json_val = response.json::<Value>().await?;
         Ok(json_val)
     }
+
+    /// High-level Search returning strongly-typed `VideoCardItem` results.
+    pub async fn search_videos(&self, query: &str) -> Result<Vec<VideoCardItem>, InnertubeError> {
+        let val = self.search(query).await?;
+        let mut results = Vec::new();
+        extract_video_renderers(&val, &mut results);
+        Ok(results)
+    }
+
+    /// High-level Trending / Home feed returning strongly-typed `VideoCardItem` cards.
+    pub async fn get_home_or_trending_feed(&self) -> Result<Vec<VideoCardItem>, InnertubeError> {
+        // First try FEwhat_to_watch or FEtrending
+        if let Ok(val) = self.browse("FEtrending").await {
+            let mut results = Vec::new();
+            extract_video_renderers(&val, &mut results);
+            if !results.is_empty() {
+                return Ok(results);
+            }
+        }
+        // Fallback to curated popular query if anonymous FEwhat_to_watch requires visitor history
+        self.search_videos("4K HDR nature technology science").await
+    }
+
+    /// Search Autocomplete suggestions from YouTube Suggest API.
+    pub async fn search_suggestions(&self, query: &str) -> Result<Vec<String>, InnertubeError> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!(
+            "https://suggestqueries-clients6.youtube.com/complete/search?client=youtube&ds=yt&q={}",
+            url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
+        );
+        let text = self.http.get(&url).send().await?.text().await?;
+        // Response is JSONP: window.google.ac.h(["query",[["suggestion 1",0],[...]]])
+        let mut suggestions = Vec::new();
+        if let (Some(start), Some(end)) = (text.find('['), text.rfind(']')) {
+            if let Ok(arr) = serde_json::from_str::<Value>(&text[start..=end]) {
+                if let Some(items) = arr.get(1).and_then(|v| v.as_array()) {
+                    for item in items {
+                        if let Some(s) = item.get(0).and_then(|v| v.as_str()) {
+                            suggestions.push(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(suggestions)
+    }
+
+    /// Fetches `/next` (Related Videos, Chapters).
+    pub async fn get_video_next(&self, video_id: &str) -> Result<VideoNextDetails, InnertubeError> {
+        let url = format!("{INNERTUBE_API_BASE}/next?prettyPrint=false");
+        let context = self.build_context_json(AppClient::Web).await;
+
+        let body = json!({
+            "context": context,
+            "videoId": video_id,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(AppClient::Web.user_agent()));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let response = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+
+        let json_val = response.json::<Value>().await?;
+        let mut related_videos = Vec::new();
+        extract_video_renderers(&json_val, &mut related_videos);
+
+        Ok(VideoNextDetails {
+            related_videos,
+            comments: Vec::new(),
+            chapters: Vec::new(),
+        })
+    }
+}
+
+/// Recursively walks an Innertube JSON response tree to extract `videoRenderer`,
+/// `compactVideoRenderer`, and `gridVideoRenderer` items into normalized `VideoCardItem`s.
+fn extract_video_renderers(node: &Value, out: &mut Vec<VideoCardItem>) {
+    match node {
+        Value::Object(map) => {
+            for key in ["videoRenderer", "compactVideoRenderer", "gridVideoRenderer"] {
+                if let Some(renderer) = map.get(key) {
+                    if let Some(card) = parse_video_renderer(renderer) {
+                        if !out.iter().any(|existing| existing.video_id == card.video_id) {
+                            out.push(card);
+                        }
+                    }
+                }
+            }
+            for val in map.values() {
+                extract_video_renderers(val, out);
+            }
+        }
+        Value::Array(arr) => {
+            for val in arr {
+                extract_video_renderers(val, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_video_renderer(r: &Value) -> Option<VideoCardItem> {
+    let video_id = r.get("videoId")?.as_str()?.to_string();
+    let title = extract_text(r.get("title")?);
+    if title.is_empty() {
+        return None;
+    }
+
+    let channel_node = r.get("ownerText").or_else(|| r.get("longBylineText")).or_else(|| r.get("shortBylineText"));
+    let channel_name = channel_node.map(extract_text).unwrap_or_else(|| "YouTube Creator".to_string());
+
+    let channel_id = channel_node
+        .and_then(|n| n.pointer("/runs/0/navigationEndpoint/browseEndpoint/browseId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let view_count_text = r
+        .get("shortViewCountText")
+        .or_else(|| r.get("viewCountText"))
+        .map(extract_text)
+        .unwrap_or_else(|| "".to_string());
+
+    let published_time_text = r
+        .get("publishedTimeText")
+        .map(extract_text)
+        .unwrap_or_else(|| "".to_string());
+
+    let length_text = r
+        .get("lengthText")
+        .map(extract_text)
+        .unwrap_or_else(|| "LIVE".to_string());
+
+    let thumbnail_url = r
+        .pointer("/thumbnail/thumbnails")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.last())
+        .and_then(|t| t.get("url"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string());
+
+    let is_live = length_text == "LIVE" || r.get("badges").map(|b| b.to_string().contains("LIVE")).unwrap_or(false);
+
+    Some(VideoCardItem {
+        video_id,
+        title,
+        channel_name,
+        channel_id,
+        view_count_text,
+        published_time_text,
+        length_text,
+        thumbnail_url,
+        is_live,
+    })
+}
+
+fn extract_text(node: &Value) -> String {
+    if let Some(simple) = node.get("simpleText").and_then(|v| v.as_str()) {
+        return simple.to_string();
+    }
+    if let Some(runs) = node.get("runs").and_then(|v| v.as_array()) {
+        return runs
+            .iter()
+            .filter_map(|r| r.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("");
+    }
+    String::new()
 }
 
 fn extract_codecs(mime_type: &str) -> String {

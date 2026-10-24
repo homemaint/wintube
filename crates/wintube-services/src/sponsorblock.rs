@@ -1,7 +1,6 @@
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, error, info, warn};
+use tracing::debug;
 
 const SPONSORBLOCK_API_BASE: &str = "https://sponsor.ajay.app/api";
 

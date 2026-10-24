@@ -94,13 +94,50 @@ pub struct ThumbnailItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamingData {
-    pub expiresInSeconds: Option<String>,
+    #[serde(rename = "expiresInSeconds")]
+    pub expires_in_seconds: Option<String>,
     #[serde(default)]
     pub formats: Vec<FormatStream>,
     #[serde(default)]
     pub adaptive_formats: Vec<FormatStream>,
     pub hls_manifest_url: Option<String>,
     pub dash_manifest_url: Option<String>,
+}
+
+// ----------------- Feed, Search & Next Models -----------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoCardItem {
+    pub video_id: String,
+    pub title: String,
+    pub channel_name: String,
+    pub channel_id: Option<String>,
+    pub view_count_text: String,
+    pub published_time_text: String,
+    pub length_text: String,
+    pub thumbnail_url: Option<String>,
+    pub is_live: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommentItem {
+    pub author: String,
+    pub text: String,
+    pub published_time: String,
+    pub likes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterItem {
+    pub title: String,
+    pub start_time_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VideoNextDetails {
+    pub related_videos: Vec<VideoCardItem>,
+    pub comments: Vec<CommentItem>,
+    pub chapters: Vec<ChapterItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

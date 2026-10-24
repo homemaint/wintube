@@ -1,0 +1,9 @@
+LIBRARY secur32
+EXPORTS
+  GetComputerObjectNameA
+  GetComputerObjectNameW
+  SecpFreeMemory
+  SecpTranslateName
+  SecpTranslateNameEx
+  TranslateNameA
+  TranslateNameW

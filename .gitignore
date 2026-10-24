@@ -3,6 +3,7 @@ target/
 *.pdb
 *.dll
 *.exe
+*.redb
 .env
 .idea/
 .vscode/
