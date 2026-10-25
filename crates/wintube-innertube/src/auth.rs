@@ -92,7 +92,64 @@ impl SignInService {
         ];
 
         let res = self.http.post(TOKEN_URL).form(&params).send().await?;
-        let token: OAuthToken = res.json().await?;
+        let mut token: OAuthToken = res.json().await?;
+        // Refresh responses omit the refresh token; keep the one we already have.
+        if token.refresh_token.is_none() {
+            token.refresh_token = Some(refresh_token.to_string());
+        }
         Ok(token)
+    }
+
+    /// Polls until the user approves the code at `youtube.com/activate` (or it expires).
+    pub async fn wait_for_token(&self, code: &DeviceAuthCode) -> anyhow::Result<OAuthToken> {
+        let interval = code.interval.max(3);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(code.expires_in.max(60));
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            if let Some(token) = self.poll_for_token(&code.device_code).await? {
+                return Ok(token);
+            }
+        }
+        anyhow::bail!("Activation code expired before it was entered")
+    }
+
+    fn token_path() -> std::path::PathBuf {
+        let base = std::env::var("APPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        base.join("WinTube").join("auth.json")
+    }
+
+    /// Persists the OAuth token locally so sign-in survives restarts.
+    pub fn save_token(token: &OAuthToken) {
+        let path = Self::token_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string(token) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    pub fn load_token() -> Option<OAuthToken> {
+        let data = std::fs::read_to_string(Self::token_path()).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    pub fn clear_token() {
+        let _ = std::fs::remove_file(Self::token_path());
+    }
+
+    /// Loads a saved token and refreshes it into a fresh access token.
+    pub async fn restore_session(&self) -> Option<OAuthToken> {
+        let saved = Self::load_token()?;
+        let refresh = saved.refresh_token.clone()?;
+        match self.refresh_access_token(&refresh).await {
+            Ok(t) if !t.access_token.is_empty() => {
+                Self::save_token(&t);
+                Some(t)
+            }
+            _ => None,
+        }
     }
 }

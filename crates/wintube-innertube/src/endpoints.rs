@@ -34,6 +34,7 @@ pub struct InnertubeClient {
     cipher: Arc<CipherEngine>,
     visitor_data: Arc<tokio::sync::RwLock<Option<String>>>,
     po_token: Arc<tokio::sync::RwLock<Option<String>>>,
+    auth_token: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl InnertubeClient {
@@ -48,7 +49,25 @@ impl InnertubeClient {
             cipher: Arc::new(CipherEngine::new()),
             visitor_data: Arc::new(tokio::sync::RwLock::new(None)),
             po_token: Arc::new(tokio::sync::RwLock::new(None)),
+            auth_token: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Sets (or clears) the OAuth2 bearer access token from the TV device-code sign-in.
+    /// When present, `/player` requests via the TVHTML5 client are authenticated,
+    /// which bypasses the anonymous "Sign in to confirm you're not a bot" wall.
+    pub async fn set_auth_token(&self, token: Option<String>) {
+        *self.auth_token.write().await = token;
+    }
+
+    pub fn set_auth_token_sync(&self, token: Option<String>) {
+        if let Ok(mut g) = self.auth_token.try_write() {
+            *g = token;
+        }
+    }
+
+    pub async fn is_authenticated(&self) -> bool {
+        self.auth_token.read().await.is_some()
     }
 
     /// Sets or updates the Proof-of-Origin (poToken) for botguard bypass
@@ -61,15 +80,28 @@ impl InnertubeClient {
     async fn build_context_json(&self, client: AppClient) -> Value {
         let visitor_data = self.visitor_data.read().await.clone();
 
+        let mut client_ctx = json!({
+            "clientName": client.client_name(),
+            "clientVersion": client.client_version(),
+            "hl": "en",
+            "gl": "US",
+            "utcOffsetMinutes": 0,
+            "visitorData": visitor_data,
+        });
+        if client == AppClient::AndroidVr {
+            client_ctx["deviceMake"] = json!("Oculus");
+            client_ctx["deviceModel"] = json!("Quest 3");
+            client_ctx["androidSdkVersion"] = json!(32);
+            client_ctx["osName"] = json!("Android");
+            client_ctx["osVersion"] = json!("12L");
+        } else if client == AppClient::Ios {
+            client_ctx["deviceModel"] = json!("iPhone14,3");
+            client_ctx["osName"] = json!("iPhone OS");
+            client_ctx["osVersion"] = json!("17.5.1");
+        }
+
         json!({
-            "client": {
-                "clientName": client.client_name(),
-                "clientVersion": client.client_version(),
-                "hl": "en",
-                "gl": "US",
-                "utcOffsetMinutes": 0,
-                "visitorData": visitor_data,
-            },
+            "client": client_ctx,
             "user": {
                 "lockedSafetyMode": false
             },
@@ -83,14 +115,13 @@ impl InnertubeClient {
     /// Tries `ANDROID_VR` (high success rate, unthrottled) and automatically
     /// cascades to `TVHTML5` and `WEB` if needed.
     pub async fn get_video_playback_info(&self, video_id: &str) -> Result<VideoPlaybackInfo, InnertubeError> {
-        let clients_to_try = [
-            AppClient::AndroidVr,
-            AppClient::TvHtml5,
-            AppClient::Web,
-            AppClient::Ios,
-        ];
+        let clients_to_try: Vec<AppClient> = if self.is_authenticated().await {
+            vec![AppClient::TvHtml5, AppClient::Ios, AppClient::AndroidVr, AppClient::Web]
+        } else {
+            vec![AppClient::Ios, AppClient::AndroidVr, AppClient::TvHtml5, AppClient::Web]
+        };
 
-        let mut last_err = None;
+        let mut best_err: Option<InnertubeError> = None;
 
         for &client in &clients_to_try {
             debug!("Attempting /player extraction using client {:?}", client);
@@ -98,12 +129,16 @@ impl InnertubeClient {
                 Ok(info) => return Ok(info),
                 Err(err) => {
                     warn!("Client {:?} failed for video {}: {:?}", client, video_id, err);
-                    last_err = Some(err);
+                    // Prefer the most informative error (e.g. bot-check) over generic ones.
+                    let informative = matches!(&err, InnertubeError::Unplayable(r) if r != "UNKNOWN" && r != "Video unavailable" && !r.contains("reloaded"));
+                    if best_err.is_none() || informative {
+                        best_err = Some(err);
+                    }
                 }
             }
         }
 
-        Err(last_err.unwrap_or_else(|| InnertubeError::StreamNotFound))
+        Err(best_err.unwrap_or_else(|| InnertubeError::StreamNotFound))
     }
 
     async fn fetch_player_with_client(
@@ -133,6 +168,17 @@ impl InnertubeClient {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if let Some(referer) = client.referer() {
             headers.insert(REFERER, HeaderValue::from_static(referer));
+        }
+        if client == AppClient::Ios {
+            headers.insert("X-YouTube-Client-Name", HeaderValue::from_static("5"));
+            headers.insert("X-YouTube-Client-Version", HeaderValue::from_static("20.03.02"));
+        }
+        if client == AppClient::TvHtml5 {
+            if let Some(ref tok) = *self.auth_token.read().await {
+                if let Ok(v) = HeaderValue::from_str(&format!("Bearer {tok}")) {
+                    headers.insert(reqwest::header::AUTHORIZATION, v);
+                }
+            }
         }
 
         let response = self

@@ -4,14 +4,14 @@ use std::time::Duration;
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, progress_bar, row, scrollable,
+    button, column, container, horizontal_rule, horizontal_space, image, progress_bar, row, scrollable,
     slider, text, text_input, vertical_rule, Column, Row,
 };
 use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme};
 use tracing::error;
 
 use wintube_innertube::{
-    DeviceAuthCode, InnertubeClient, SignInService, VideoCardItem, VideoNextDetails,
+    DeviceAuthCode, InnertubeClient, OAuthToken, SignInService, VideoCardItem, VideoNextDetails,
     VideoPlaybackInfo,
 };
 use wintube_player::{
@@ -54,6 +54,7 @@ pub enum Message {
     SelectSuggestion(String),
     SuggestionsLoaded(Vec<String>),
     FeedLoaded(Result<Vec<VideoCardItem>, String>),
+    ThumbnailsLoaded(Vec<(String, Vec<u8>)>),
 
     // Video Selection & Pre-Resolving
     SelectVideo(String),
@@ -79,6 +80,10 @@ pub enum Message {
     },
     RequestTvDeviceCode,
     TvDeviceCodeReceived(Result<DeviceAuthCode, String>),
+    TvAuthCompleted(Result<OAuthToken, String>),
+    CancelTvAuth,
+    SignOut,
+    SessionRestored(Option<OAuthToken>),
 
     // Background Tick & Keyboard/Controller Input
     PlayerTick,
@@ -117,6 +122,8 @@ pub struct WinTubeApp {
     feed_videos: Vec<VideoCardItem>,
     subscriptions: Vec<LocalSubscription>,
     watch_history: Vec<WatchHistoryItem>,
+    thumbnail_cache: HashMap<String, image::Handle>,
+    http_client: reqwest::Client,
 
     // Pre-Resolve Cache & Active Video Playback
     resolved_cache: HashMap<String, LoadedVideoBundle>,
@@ -140,6 +147,8 @@ pub struct WinTubeApp {
 
     // TV OAuth2 Device Activation State
     device_auth_code: Option<DeviceAuthCode>,
+    is_signed_in: bool,
+    auth_poll_active: bool,
 }
 
 impl WinTubeApp {
@@ -161,8 +170,19 @@ impl WinTubeApp {
         let watch_history = storage.get_recent_history(50).unwrap_or_default();
         let player = MediaEngine::new();
 
+        let initial_auth = SignInService::load_token();
+        let is_signed_in = initial_auth.is_some();
+        if let Some(ref tok) = initial_auth {
+            innertube.set_auth_token_sync(Some(tok.access_token.clone()));
+        }
+
+        let http_client = reqwest::Client::builder()
+            .gzip(true)
+            .build()
+            .unwrap_or_default();
+
         let client_clone = innertube.clone();
-        let initial_task = Task::perform(
+        let feed_task = Task::perform(
             async move {
                 client_clone
                     .get_home_or_trending_feed()
@@ -171,6 +191,18 @@ impl WinTubeApp {
             },
             Message::FeedLoaded,
         );
+
+        let signin_clone = signin.clone();
+        let restore_task = if is_signed_in {
+            Task::perform(
+                async move { signin_clone.restore_session().await },
+                Message::SessionRestored,
+            )
+        } else {
+            Task::none()
+        };
+
+        let initial_task = Task::batch([feed_task, restore_task]);
 
         let app = Self {
             innertube,
@@ -184,12 +216,18 @@ impl WinTubeApp {
             active_tab: ActiveNavTab::Home,
             focused_card_index: 0,
             is_loading_feed: true,
-            status_banner: "Loading Trending & Home Feed via Innertube...".to_string(),
+            status_banner: if is_signed_in {
+                "Signed in to YouTube TV (Bot protection bypassed) • Loading Feed...".to_string()
+            } else {
+                "Loading Trending & Home Feed via Innertube...".to_string()
+            },
             search_query: String::new(),
             search_suggestions: Vec::new(),
             feed_videos: Vec::new(),
             subscriptions,
             watch_history,
+            thumbnail_cache: HashMap::new(),
+            http_client,
             resolved_cache: HashMap::new(),
             active_video: None,
             playback_state: PlaybackState::Stopped,
@@ -207,6 +245,8 @@ impl WinTubeApp {
             mini_player_active: false,
             active_decoder_label: "D3D11VA Hardware Decoder Ready".to_string(),
             device_auth_code: None,
+            is_signed_in,
+            auth_poll_active: false,
         };
 
         (app, initial_task)
@@ -328,13 +368,51 @@ impl WinTubeApp {
                 match res {
                     Ok(videos) => {
                         self.status_banner = format!("Loaded {} videos via Innertube", videos.len());
-                        self.feed_videos = videos;
+                        self.feed_videos = videos.clone();
                         self.focused_card_index = 0;
+
+                        let dl_items: Vec<(String, String)> = videos
+                            .iter()
+                            .filter_map(|v| v.thumbnail_url.as_ref().map(|u| (v.video_id.clone(), u.clone())))
+                            .collect();
+
+                        let client = self.http_client.clone();
+                        return Task::perform(
+                            async move {
+                                let mut results = Vec::new();
+                                let mut set = tokio::task::JoinSet::new();
+                                for (id, url) in dl_items {
+                                    let c = client.clone();
+                                    set.spawn(async move {
+                                        if let Ok(res) = c.get(&url).send().await {
+                                            if let Ok(bytes) = res.bytes().await {
+                                                return Some((id, bytes.to_vec()));
+                                            }
+                                        }
+                                        None
+                                    });
+                                }
+                                while let Some(res) = set.join_next().await {
+                                    if let Ok(Some((id, bytes))) = res {
+                                        results.push((id, bytes));
+                                    }
+                                }
+                                results
+                            },
+                            Message::ThumbnailsLoaded,
+                        );
                     }
                     Err(err) => {
                         error!("Feed load error: {}", err);
                         self.status_banner = format!("Feed error: {}", err);
                     }
+                }
+                Task::none()
+            }
+
+            Message::ThumbnailsLoaded(items) => {
+                for (id, bytes) in items {
+                    self.thumbnail_cache.insert(id, image::Handle::from_bytes(bytes));
                 }
                 Task::none()
             }
@@ -393,10 +471,52 @@ impl WinTubeApp {
             Message::VideoResolved(video_id, res) => match res {
                 Ok(bundle) => {
                     self.resolved_cache.insert(video_id, bundle.clone());
-                    self.activate_video_bundle(bundle)
+                    let activate_task = self.activate_video_bundle(bundle.clone());
+
+                    let rel_items: Vec<(String, String)> = bundle
+                        .next
+                        .related_videos
+                        .iter()
+                        .filter_map(|v| v.thumbnail_url.as_ref().map(|u| (v.video_id.clone(), u.clone())))
+                        .collect();
+
+                    if !rel_items.is_empty() {
+                        let client = self.http_client.clone();
+                        let dl_task = Task::perform(
+                            async move {
+                                let mut results = Vec::new();
+                                let mut set = tokio::task::JoinSet::new();
+                                for (id, url) in rel_items {
+                                    let c = client.clone();
+                                    set.spawn(async move {
+                                        if let Ok(res) = c.get(&url).send().await {
+                                            if let Ok(bytes) = res.bytes().await {
+                                                return Some((id, bytes.to_vec()));
+                                            }
+                                        }
+                                        None
+                                    });
+                                }
+                                while let Some(res) = set.join_next().await {
+                                    if let Ok(Some((id, bytes))) = res {
+                                        results.push((id, bytes));
+                                    }
+                                }
+                                results
+                            },
+                            Message::ThumbnailsLoaded,
+                        );
+                        Task::batch([activate_task, dl_task])
+                    } else {
+                        activate_task
+                    }
                 }
                 Err(err) => {
-                    self.status_banner = format!("Playback extraction failed: {}", err);
+                    self.status_banner = if err.contains("not a bot") || err.contains("Sign in") {
+                        "YouTube flagged this video as bot-protected for your network/IP. Try another video, or sign in via Settings (TV activation) and retry.".to_string()
+                    } else {
+                        format!("Playback extraction failed: {}", err)
+                    };
                     Task::none()
                 }
             },
@@ -484,6 +604,7 @@ impl WinTubeApp {
 
             Message::RequestTvDeviceCode => {
                 let signin = self.signin.clone();
+                self.auth_poll_active = true;
                 self.status_banner = "Requesting YouTube TV OAuth2 activation code...".to_string();
                 Task::perform(
                     async move { signin.request_device_code().await.map_err(|e| e.to_string()) },
@@ -498,13 +619,79 @@ impl WinTubeApp {
                             "Go to {} and enter code: {}",
                             code.verification_url, code.user_code
                         );
-                        self.device_auth_code = Some(code);
+                        self.device_auth_code = Some(code.clone());
+                        self.auth_poll_active = true;
+
+                        let signin = self.signin.clone();
+                        Task::perform(
+                            async move { signin.wait_for_token(&code).await.map_err(|e| e.to_string()) },
+                            Message::TvAuthCompleted,
+                        )
                     }
                     Err(e) => {
                         self.status_banner = format!("OAuth code error: {}", e);
+                        self.auth_poll_active = false;
+                        Task::none()
                     }
                 }
+            }
+
+            Message::TvAuthCompleted(res) => {
+                self.auth_poll_active = false;
+                match res {
+                    Ok(token) => {
+                        SignInService::save_token(&token);
+                        let client = self.innertube.clone();
+                        let access_tok = token.access_token.clone();
+                        self.is_signed_in = true;
+                        self.device_auth_code = None;
+                        self.status_banner = "✅ Signed in to YouTube TV! Bot protection bypassed.".to_string();
+                        Task::perform(
+                            async move { client.set_auth_token(Some(access_tok)).await },
+                            |_| Message::PlayerTick,
+                        )
+                    }
+                    Err(e) => {
+                        self.status_banner = format!("TV Activation note: {}", e);
+                        self.device_auth_code = None;
+                        Task::none()
+                    }
+                }
+            }
+
+            Message::CancelTvAuth => {
+                self.auth_poll_active = false;
+                self.device_auth_code = None;
+                self.status_banner = "TV activation cancelled.".to_string();
                 Task::none()
+            }
+
+            Message::SignOut => {
+                SignInService::clear_token();
+                self.is_signed_in = false;
+                self.device_auth_code = None;
+                let client = self.innertube.clone();
+                self.status_banner = "Signed out of YouTube account.".to_string();
+                Task::perform(
+                    async move { client.set_auth_token(None).await },
+                    |_| Message::PlayerTick,
+                )
+            }
+
+            Message::SessionRestored(token_opt) => {
+                if let Some(token) = token_opt {
+                    SignInService::save_token(&token);
+                    let client = self.innertube.clone();
+                    let tok = token.access_token;
+                    self.is_signed_in = true;
+                    self.status_banner = "YouTube TV session restored from saved credentials.".to_string();
+                    Task::perform(
+                        async move { client.set_auth_token(Some(tok)).await },
+                        |_| Message::PlayerTick,
+                    )
+                } else {
+                    Task::none()
+                }
             }
 
             Message::PlayerTick => {
@@ -896,7 +1083,37 @@ impl WinTubeApp {
                     text("").size(11)
                 };
 
+                let thumbnail_view: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&video.video_id) {
+                    image(handle.clone())
+                        .width(Length::Fill)
+                        .height(Length::Fixed(if is_tv { 190.0 } else { 150.0 }))
+                        .content_fit(iced::ContentFit::Cover)
+                        .into()
+                } else {
+                    container(
+                        column![
+                            text("▶").size(32).color(Color::from_rgb(0.6, 0.65, 0.8)),
+                            text(if video.is_live { "🔴 LIVE" } else { &video.length_text })
+                                .size(12)
+                                .color(Color::from_rgb(0.8, 0.85, 0.95)),
+                        ]
+                        .spacing(6)
+                        .align_x(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fixed(if is_tv { 190.0 } else { 150.0 }))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(|_| container::Style {
+                        background: Some(Color::from_rgb(0.12, 0.14, 0.20).into()),
+                        border: iced::border::rounded(6),
+                        ..Default::default()
+                    })
+                    .into()
+                };
+
                 let card_content = column![
+                    thumbnail_view,
                     row![
                         text(if video.is_live { "🔴 LIVE" } else { "🎬 VIDEO" })
                             .size(11)
@@ -949,7 +1166,7 @@ impl WinTubeApp {
                         .on_press(Message::SelectVideo(video.video_id.clone()))
                         .padding(0)
                         .style(if is_focused {
-                            button::success
+                            button::primary
                         } else {
                             button::secondary
                         })
@@ -1267,9 +1484,30 @@ impl WinTubeApp {
         let mut related_col = Column::new().spacing(8);
         related_col = related_col.push(text("⏭ Up Next / Related Videos").size(15));
         for rel in bundle.next.related_videos.iter().take(10) {
+            let rel_thumb: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&rel.video_id) {
+                image(handle.clone())
+                    .width(Length::Fixed(80.0))
+                    .height(Length::Fixed(48.0))
+                    .content_fit(iced::ContentFit::Cover)
+                    .into()
+            } else {
+                container(text("▶").size(14).color(Color::from_rgb(0.6, 0.65, 0.8)))
+                    .width(Length::Fixed(80.0))
+                    .height(Length::Fixed(48.0))
+                    .center_x(Length::Fixed(80.0))
+                    .center_y(Length::Fixed(48.0))
+                    .style(|_| container::Style {
+                        background: Some(Color::from_rgb(0.12, 0.14, 0.20).into()),
+                        border: iced::border::rounded(4),
+                        ..Default::default()
+                    })
+                    .into()
+            };
+
             related_col = related_col.push(
                 container(
                     row![
+                        rel_thumb,
                         column![
                             text(&rel.title).size(13),
                             text(format!("{} • {}", rel.channel_name, rel.length_text))
@@ -1411,20 +1649,61 @@ impl WinTubeApp {
     }
 
     fn view_settings(&self, is_tv: bool) -> Element<'_, Message> {
-        let auth_section: Element<'_, Message> = if let Some(ref code) = self.device_auth_code {
+        let auth_section: Element<'_, Message> = if self.is_signed_in {
             column![
-                text(format!("1. Open {} in any browser", code.verification_url)).size(15),
-                text(format!("2. Enter TV Activation Code:  {}", code.user_code))
-                    .size(22)
-                    .color(Color::from_rgb(0.2, 0.95, 0.5)),
+                row![
+                    text("✅ Connected to YouTube TV").size(16).color(Color::from_rgb(0.2, 0.95, 0.5)),
+                    horizontal_space(),
+                    button(text("Sign Out").size(13))
+                        .on_press(Message::SignOut)
+                        .padding([6, 14]),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+                text("Account session is active. TVHTML5 4K/8K DASH streams are fully unlocked and bot-check free.")
+                    .size(13)
+                    .color(Color::from_rgb(0.65, 0.75, 0.85)),
             ]
-            .spacing(6)
+            .spacing(8)
+            .into()
+        } else if let Some(ref code) = self.device_auth_code {
+            column![
+                text(format!("1. Visit {} on your mobile phone or PC browser", code.verification_url)).size(15),
+                row![
+                    text("2. Enter TV Activation Code: ").size(16),
+                    text(&code.user_code).size(26).color(Color::from_rgb(0.2, 0.95, 0.5)),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+                row![
+                    text(if self.auth_poll_active {
+                        "⏳ Waiting for approval at youtube.com/activate..."
+                    } else {
+                        "Code generated."
+                    })
+                    .size(13)
+                    .color(Color::from_rgb(0.95, 0.85, 0.3)),
+                    horizontal_space(),
+                    button(text("Cancel").size(12))
+                        .on_press(Message::CancelTvAuth)
+                        .padding([4, 10]),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(10)
             .into()
         } else {
-            button(text("🔑 Generate YouTube TV OAuth2 Activation Code").size(14))
-                .on_press(Message::RequestTvDeviceCode)
-                .padding([8, 14])
-                .into()
+            column![
+                text("Sign in using Google's official TV device code (SmartTube method). No password or cookies needed.")
+                    .size(13)
+                    .color(Color::from_rgb(0.65, 0.75, 0.85)),
+                button(text("🔑 Generate YouTube TV OAuth2 Activation Code").size(14))
+                    .on_press(Message::RequestTvDeviceCode)
+                    .padding([8, 14]),
+            ]
+            .spacing(8)
+            .into()
         };
 
         let col = column![

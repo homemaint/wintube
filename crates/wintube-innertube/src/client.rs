@@ -32,9 +32,9 @@ impl AppClient {
 
     pub fn client_version(&self) -> &'static str {
         match self {
-            AppClient::TvHtml5 => "7.20240910.12.00",
-            AppClient::AndroidVr => "1.56.21",
-            AppClient::Ios => "19.38.3",
+            AppClient::TvHtml5 => "7.20260707.07.00",
+            AppClient::AndroidVr => "1.65.10",
+            AppClient::Ios => "20.03.02",
             AppClient::Web => "2.20240910.05.00",
             AppClient::MWeb => "2.20240910.05.00",
             AppClient::AndroidEmbed => "19.38.3",
@@ -54,9 +54,9 @@ impl AppClient {
 
     pub fn user_agent(&self) -> &'static str {
         match self {
-            AppClient::TvHtml5 => "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36",
-            AppClient::AndroidVr => "Mozilla/5.0 (Linux; Android 10; Quest 2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36",
-            AppClient::Ios => "com.google.ios.youtube/19.38.3 (iPhone16,2; U; CPU iOS 18_0 like Mac OS X; en_US)",
+            AppClient::TvHtml5 => "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)",
+            AppClient::AndroidVr => "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            AppClient::Ios => "com.google.ios.youtube/20.03.02 (iPhone14,3; U; CPU iOS 17_5_1 like Mac OS X; en_US)",
             AppClient::Web => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             AppClient::MWeb => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
             AppClient::AndroidEmbed => "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
