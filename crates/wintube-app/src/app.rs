@@ -58,6 +58,7 @@ pub enum Message {
 
     // Video Selection & Pre-Resolving
     SelectVideo(String),
+    #[allow(dead_code)]
     FocusCardIndex(usize),
     VideoResolved(String, Result<LoadedVideoBundle, String>),
 
@@ -265,7 +266,16 @@ impl WinTubeApp {
     }
 
     pub fn theme(&self) -> Theme {
-        Theme::TokyoNightStorm
+        Theme::custom(
+            "YouTube Dark".to_string(),
+            iced::theme::Palette {
+                background: Color::from_rgb8(15, 15, 15),
+                text: Color::from_rgb8(241, 241, 241),
+                primary: Color::from_rgb8(255, 0, 0),
+                success: Color::from_rgb8(43, 166, 64),
+                danger: Color::from_rgb8(204, 0, 0),
+            },
+        )
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -903,49 +913,118 @@ impl WinTubeApp {
 
     pub fn view(&self) -> Element<'_, Message> {
         let is_tv = self.form_factor == UiFormFactor::TvCouch;
-        let title_size = if is_tv { 26 } else { 20 };
+        let title_size = if is_tv { 22 } else { 18 };
 
-        // Top Navigation Bar
+        // Authentic YouTube Brand Header
+        let yt_badge = container(
+            text("▶").size(if is_tv { 14 } else { 12 }).color(Color::WHITE),
+        )
+        .padding([3, 7])
+        .style(|_| container::Style {
+            background: Some(yt_colors::YT_RED.into()),
+            border: iced::border::rounded(5),
+            ..Default::default()
+        });
+
+        let mut brand_logo = row![
+            yt_badge,
+            text("WinTube")
+                .size(title_size)
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        if is_tv {
+            brand_logo = brand_logo.push(
+                container(
+                    text("TV")
+                        .size(10)
+                        .font(iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        })
+                        .color(yt_colors::TEXT_SECONDARY),
+                )
+                .padding([2, 5])
+                .style(|_| container::Style {
+                    background: Some(yt_colors::BG_PILL.into()),
+                    border: iced::border::rounded(4),
+                    ..Default::default()
+                }),
+            );
+        }
+
+
+        // YouTube Search Bar (Pill Input + Search Button)
+        let search_box = text_input("Search", &self.search_query)
+            .on_input(Message::SearchQueryChanged)
+            .on_submit(Message::SubmitSearch)
+            .padding(if is_tv { [10, 16] } else { [8, 14] })
+            .size(if is_tv { 16 } else { 14 })
+            .width(Length::Fixed(if is_tv { 520.0 } else { 420.0 }))
+            .style(yt_search_input);
+
+        let search_btn = button(
+            text("🔍").size(if is_tv { 16 } else { 14 }),
+        )
+        .on_press(Message::SubmitSearch)
+        .padding(if is_tv { [10, 18] } else { [8, 16] })
+        .style(yt_search_button);
+
+        let search_bar = row![search_box, search_btn].spacing(6).align_y(Alignment::Center);
+
+        // TV / Desktop Mode Switch Pill
+        let mode_switch_btn = button(
+            text(match self.form_factor {
+                UiFormFactor::Desktop => "📺 TV Mode (F11)",
+                UiFormFactor::TvCouch => "🖥 Desktop Mode (F11)",
+            })
+            .size(if is_tv { 14 } else { 12 })
+        )
+        .on_press(Message::ToggleFormFactor)
+        .padding(if is_tv { [8, 14] } else { [6, 12] })
+        .style(yt_pill_button);
+
         let top_bar = container(
             row![
-                text(if is_tv { "📺 WinTube TV" } else { "▶ WinTube" })
-                    .size(title_size)
-                    .color(Color::from_rgb(1.0, 0.25, 0.25)),
-                horizontal_space().width(20),
-                text_input("Search YouTube (Ad-Free, SponsorBlock, 4K60)...", &self.search_query)
-                    .on_input(Message::SearchQueryChanged)
-                    .on_submit(Message::SubmitSearch)
-                    .padding(if is_tv { 12 } else { 8 })
-                    .size(if is_tv { 18 } else { 14 })
-                    .width(Length::FillPortion(3)),
-                button(text(if is_tv { "🔍 Search" } else { "Search" }).size(if is_tv { 18 } else { 14 }))
-                    .on_press(Message::SubmitSearch)
-                    .padding(if is_tv { 12 } else { 8 }),
-                horizontal_space().width(Length::FillPortion(1)),
-                button(
-                    text(match self.form_factor {
-                        UiFormFactor::Desktop => "🎮 Switch to TV Mode (F11)",
-                        UiFormFactor::TvCouch => "🖥 Switch to Desktop Mode (F11)",
-                    })
-                    .size(if is_tv { 16 } else { 13 })
-                )
-                .on_press(Message::ToggleFormFactor)
-                .padding(if is_tv { 10 } else { 7 }),
+                brand_logo,
+                horizontal_space(),
+                search_bar,
+                horizontal_space(),
+                mode_switch_btn,
             ]
-            .spacing(10)
             .align_y(Alignment::Center),
         )
-        .padding(12);
+        .style(|_| container::Style {
+            background: Some(yt_colors::BG_APP.into()),
+            border: iced::Border {
+                color: yt_colors::BORDER_COLOR,
+                width: 0.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .padding([10, 16]);
 
         // Autocomplete Suggestions Bar
         let suggestions_bar: Element<'_, Message> = if !self.search_suggestions.is_empty() {
             let mut sug_row = Row::new().spacing(8).align_y(Alignment::Center);
-            sug_row = sug_row.push(text("Suggestions:").size(12).color(Color::from_rgb(0.6, 0.6, 0.65)));
+            sug_row = sug_row.push(
+                text("Suggestions:")
+                    .size(12)
+                    .color(yt_colors::TEXT_SECONDARY),
+            );
             for sug in &self.search_suggestions {
                 sug_row = sug_row.push(
                     button(text(sug).size(12))
                         .on_press(Message::SelectSuggestion(sug.clone()))
-                        .padding([4, 8]),
+                        .padding([4, 10])
+                        .style(yt_pill_button),
                 );
             }
             container(sug_row).padding([4, 16]).into()
@@ -978,7 +1057,7 @@ impl WinTubeApp {
             row![
                 text(&self.status_banner)
                     .size(12)
-                    .color(Color::from_rgb(0.65, 0.72, 0.85)),
+                    .color(yt_colors::TEXT_SECONDARY),
                 horizontal_space(),
                 text(format!(
                     "Engine: {} | Max: {:?} | SponsorBlock: {}",
@@ -987,11 +1066,20 @@ impl WinTubeApp {
                     if self.sponsorblock_enabled { "ON" } else { "OFF" }
                 ))
                 .size(12)
-                .color(Color::from_rgb(0.5, 0.85, 0.6)),
+                .color(Color::from_rgb(0.2, 0.85, 0.5)),
             ]
             .align_y(Alignment::Center),
         )
-        .padding([6, 14]);
+        .padding([6, 16])
+        .style(|_| container::Style {
+            background: Some(yt_colors::BG_APP.into()),
+            border: iced::Border {
+                color: yt_colors::BORDER_COLOR,
+                width: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
 
         column![
             top_bar,
@@ -1006,32 +1094,47 @@ impl WinTubeApp {
     }
 
     fn view_sidebar(&self, is_tv: bool) -> Element<'_, Message> {
-        let btn_size = if is_tv { 18 } else { 14 };
-        let pad = if is_tv { 14 } else { 10 };
-        let sidebar_width = if is_tv { 230 } else { 185 };
+        let btn_size = if is_tv { 16 } else { 14 };
+        let pad = if is_tv { [12, 16] } else { [10, 14] };
+        let sidebar_width = if is_tv { 230 } else { 190 };
 
         let nav_btn = |label: &'static str, tab: ActiveNavTab| {
             let active = self.active_tab == tab;
-            let prefix = if active { "▶ " } else { "   " };
-            button(text(format!("{}{}", prefix, label)).size(btn_size))
-                .on_press(Message::SwitchTab(tab))
-                .padding(pad)
-                .width(Length::Fill)
+            button(
+                text(label)
+                    .size(btn_size)
+                    .font(if active {
+                        iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        }
+                    } else {
+                        iced::font::Font::DEFAULT
+                    }),
+            )
+            .on_press(Message::SwitchTab(tab))
+            .padding(pad)
+            .style(yt_nav_button(active))
+            .width(Length::Fill)
         };
 
         container(
             column![
-                nav_btn("🔥 Home / Trending", ActiveNavTab::Home),
-                nav_btn("🔍 Search Results", ActiveNavTab::Search),
-                nav_btn("⭐ Subscriptions", ActiveNavTab::Subscriptions),
-                nav_btn("🕒 Watch History", ActiveNavTab::History),
-                nav_btn("🎬 Now Playing", ActiveNavTab::NowPlaying),
-                nav_btn("⚙ SmartTube Settings", ActiveNavTab::Settings),
+                nav_btn("🏠 Home", ActiveNavTab::Home),
+                nav_btn("🔥 Trending", ActiveNavTab::Search),
+                nav_btn("📺 Subscriptions", ActiveNavTab::Subscriptions),
+                nav_btn("⏱ History", ActiveNavTab::History),
+                nav_btn("▶ Now Playing", ActiveNavTab::NowPlaying),
+                nav_btn("⚙ Settings", ActiveNavTab::Settings),
             ]
-            .spacing(8),
+            .spacing(6),
         )
         .width(Length::Fixed(sidebar_width as f32))
-        .padding(12)
+        .padding(10)
+        .style(|_| container::Style {
+            background: Some(yt_colors::BG_APP.into()),
+            ..Default::default()
+        })
         .into()
     }
 
@@ -1039,10 +1142,10 @@ impl WinTubeApp {
         if self.is_loading_feed {
             return container(
                 column![
-                    text("⚡ Fetching Innertube Streams...").size(if is_tv { 26 } else { 18 }),
+                    text("⚡ Fetching Innertube Streams...").size(if is_tv { 24 } else { 18 }).color(yt_colors::TEXT_PRIMARY),
                     text("Zero Ads • SponsorBlock Ready • ReturnYouTubeDislike Active")
                         .size(14)
-                        .color(Color::from_rgb(0.6, 0.65, 0.75)),
+                        .color(yt_colors::TEXT_SECONDARY),
                 ]
                 .spacing(10)
                 .align_x(Alignment::Center),
@@ -1056,7 +1159,7 @@ impl WinTubeApp {
 
         if self.feed_videos.is_empty() {
             return container(
-                text("No videos found. Try searching above!").size(18),
+                text("No videos found. Try searching above!").size(18).color(yt_colors::TEXT_SECONDARY),
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1066,24 +1169,16 @@ impl WinTubeApp {
         }
 
         let columns_per_row = if is_tv { 2 } else { 3 };
-        let mut grid_col = Column::new().spacing(16).padding(16);
+        let mut grid_col = Column::new().spacing(20).padding(20);
 
         for (chunk_idx, chunk) in self.feed_videos.chunks(columns_per_row).enumerate() {
-            let mut row_widget = Row::new().spacing(16).width(Length::Fill);
+            let mut row_widget = Row::new().spacing(20).width(Length::Fill);
 
             for (col_idx, video) in chunk.iter().enumerate() {
                 let card_idx = chunk_idx * columns_per_row + col_idx;
                 let is_focused = card_idx == self.focused_card_index;
 
-                let focus_badge = if is_focused {
-                    text(" [FOCUSED - Press Enter] ")
-                        .size(11)
-                        .color(Color::from_rgb(0.2, 0.95, 0.5))
-                } else {
-                    text("").size(11)
-                };
-
-                let thumb_h = if is_tv { 190.0 } else { 150.0 };
+                let thumb_h = if is_tv { 200.0 } else { 160.0 };
                 let thumbnail_view: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&video.video_id) {
                     image(handle.clone())
                         .width(Length::Fill)
@@ -1093,10 +1188,10 @@ impl WinTubeApp {
                 } else {
                     container(
                         column![
-                            text("▶").size(32).color(Color::from_rgb(0.6, 0.65, 0.8)),
+                            text("▶").size(32).color(yt_colors::TEXT_SECONDARY),
                             text(if video.is_live { "🔴 LIVE" } else { &video.length_text })
                                 .size(12)
-                                .color(Color::from_rgb(0.8, 0.85, 0.95)),
+                                .color(yt_colors::TEXT_SECONDARY),
                         ]
                         .spacing(6)
                         .align_x(Alignment::Center),
@@ -1106,71 +1201,78 @@ impl WinTubeApp {
                     .center_x(Length::Fill)
                     .center_y(Length::Fixed(thumb_h))
                     .style(|_| container::Style {
-                        background: Some(Color::from_rgb(0.12, 0.14, 0.20).into()),
-                        border: iced::border::rounded(6),
+                        background: Some(yt_colors::BG_INPUT.into()),
+                        border: iced::border::rounded(10),
                         ..Default::default()
                     })
                     .into()
                 };
 
+                let duration_badge = if video.is_live {
+                    container(
+                        text("LIVE")
+                            .size(10)
+                            .font(iced::font::Font {
+                                weight: iced::font::Weight::Bold,
+                                ..Default::default()
+                            })
+                            .color(Color::WHITE),
+                    )
+                    .style(yt_live_badge)
+                    .padding([2, 5])
+                } else {
+                    container(text(&video.length_text).size(11).color(Color::WHITE))
+                        .style(yt_duration_badge)
+                        .padding([2, 5])
+                };
+
                 let card_content = column![
                     thumbnail_view,
                     row![
-                        text(if video.is_live { "🔴 LIVE" } else { "🎬 VIDEO" })
-                            .size(11)
-                            .color(if video.is_live {
-                                Color::from_rgb(1.0, 0.3, 0.3)
-                            } else {
-                                Color::from_rgb(0.5, 0.75, 1.0)
-                            }),
+                        if video.is_live {
+                            container(
+                                text("🔴 LIVE")
+                                    .size(10)
+                                    .font(iced::font::Font {
+                                        weight: iced::font::Weight::Bold,
+                                        ..Default::default()
+                                    })
+                                    .color(Color::WHITE),
+                            )
+                            .style(yt_live_badge)
+                            .padding([2, 5])
+                        } else {
+                            container(horizontal_space().width(0))
+                        },
                         horizontal_space(),
-                        focus_badge,
-                        text(&video.length_text)
-                            .size(12)
-                            .color(Color::from_rgb(0.9, 0.9, 0.2)),
+                        duration_badge,
                     ]
                     .align_y(Alignment::Center),
-                    text(&video.title)
-                        .size(if is_tv { 18 } else { 15 })
-                        .color(Color::WHITE),
-                    text(&video.channel_name)
-                        .size(if is_tv { 14 } else { 13 })
-                        .color(Color::from_rgb(0.65, 0.75, 0.9)),
-                    row![
-                        text(&video.view_count_text)
-                            .size(12)
-                            .color(Color::from_rgb(0.55, 0.6, 0.68)),
-                        horizontal_space(),
-                        text(&video.published_time_text)
-                            .size(12)
-                            .color(Color::from_rgb(0.55, 0.6, 0.68)),
-                    ],
-                    row![
-                        button(
-                            text(if is_tv { "▶ Watch (4K / Ad-Free)" } else { "▶ Watch Now" })
-                                .size(if is_tv { 15 } else { 13 })
-                        )
-                        .on_press(Message::SelectVideo(video.video_id.clone()))
-                        .padding([6, 12]),
-                        horizontal_space(),
-                        button(text("Focus").size(11))
-                            .on_press(Message::FocusCardIndex(card_idx))
-                            .padding([4, 8]),
+                    column![
+                        text(&video.title)
+                            .size(if is_tv { 16 } else { 14 })
+                            .font(iced::font::Font {
+                                weight: iced::font::Weight::Bold,
+                                ..Default::default()
+                            })
+                            .color(yt_colors::TEXT_PRIMARY),
+                        text(&video.channel_name)
+                            .size(if is_tv { 14 } else { 12 })
+                            .color(yt_colors::TEXT_SECONDARY),
+                        text(format!("{} • {}", &video.view_count_text, &video.published_time_text))
+                            .size(if is_tv { 13 } else { 12 })
+                            .color(yt_colors::TEXT_SECONDARY),
                     ]
-                    .align_y(Alignment::Center),
+                    .spacing(4)
+                    .padding([2, 2]),
                 ]
-                .spacing(8)
-                .padding(14);
+                .spacing(6);
 
                 row_widget = row_widget.push(
                     button(card_content)
                         .on_press(Message::SelectVideo(video.video_id.clone()))
-                        .padding(0)
-                        .style(if is_focused {
-                            button::primary
-                        } else {
-                            button::secondary
-                        })
+                        .padding(8)
+                        .style(yt_card_button(is_focused))
                         .width(Length::FillPortion(1)),
                 );
             }
@@ -1188,6 +1290,7 @@ impl WinTubeApp {
             .height(Length::Fill)
             .into()
     }
+
 
     fn view_now_playing(&self, is_tv: bool) -> Element<'_, Message> {
         let Some(ref bundle) = self.active_video else {
@@ -1309,18 +1412,25 @@ impl WinTubeApp {
                         PlaybackState::Ended => "⏹ ENDED",
                         _ => "⏳ READY",
                     })
-                    .size(if is_tv { 20 } else { 16 })
-                    .color(Color::from_rgb(0.3, 0.95, 0.5)),
+                    .size(if is_tv { 18 } else { 15 })
+                    .font(iced::font::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..Default::default()
+                    })
+                    .color(Color::from_rgb(0.2, 0.95, 0.5)),
                     horizontal_space(),
-                    button(text("🗔 Popout Hardware Video Window (mpv / ffplay D3D11)").size(13))
+                    button(text("🗔 Popout Hardware Window (mpv / D3D11)").size(12))
                         .on_press(Message::LaunchExternalHardwareViewport)
-                        .padding([6, 12]),
+                        .padding([6, 12])
+                        .style(yt_pill_button),
                     button(text(if self.show_stats_for_nerds { "Hide Stats" } else { "Stats for Nerds" }).size(12))
                         .on_press(Message::ToggleStatsForNerds)
-                        .padding([6, 10]),
+                        .padding([6, 10])
+                        .style(yt_pill_button),
                     button(text(if self.mini_player_active { "Expanded View" } else { "Compact View" }).size(12))
                         .on_press(Message::ToggleMiniPlayer)
-                        .padding([6, 10]),
+                        .padding([6, 10])
+                        .style(yt_pill_button),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1328,22 +1438,31 @@ impl WinTubeApp {
                 stats_overlay,
                 if let Some(ref toast) = self.skip_toast {
                     text(toast)
-                        .size(14)
+                        .size(13)
                         .color(Color::from_rgb(0.2, 1.0, 0.5))
                 } else {
-                    text("Ad-Free Stream • No Pre-Roll / Mid-Roll Ads").size(12).color(Color::from_rgb(0.55, 0.65, 0.75))
+                    text("Zero Ads • SponsorBlock Active • Hardware D3D11VA Decode")
+                        .size(12)
+                        .color(yt_colors::TEXT_SECONDARY)
                 },
             ]
             .spacing(10),
         )
         .padding(16)
+        .style(|_| container::Style {
+            background: Some(Color::BLACK.into()),
+            border: iced::border::rounded(12),
+            ..Default::default()
+        })
         .width(Length::Fill);
 
         // Seekbar & Transport Controls
         let transport_bar = container(
             column![
                 row![
-                    text(format_seconds(self.position_secs as u64)).size(13),
+                    text(format_seconds(self.position_secs as u64))
+                        .size(13)
+                        .color(yt_colors::TEXT_SECONDARY),
                     slider(
                         0.0..=(self.duration_secs.max(1.0)),
                         self.position_secs,
@@ -1351,7 +1470,9 @@ impl WinTubeApp {
                     )
                     .step(1.0)
                     .width(Length::Fill),
-                    text(format_seconds(self.duration_secs as u64)).size(13),
+                    text(format_seconds(self.duration_secs as u64))
+                        .size(13)
+                        .color(yt_colors::TEXT_SECONDARY),
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center),
@@ -1362,102 +1483,166 @@ impl WinTubeApp {
                         } else {
                             "▶ Play (K)"
                         })
-                        .size(14)
+                        .size(13)
                     )
                     .on_press(Message::TogglePlayPause)
-                    .padding([8, 16]),
-                    button(text("⏪ -10s (J)").size(13))
+                    .padding([6, 14])
+                    .style(yt_pill_button),
+                    button(text("⏪ -10s (J)").size(12))
                         .on_press(Message::SeekRelative(-10.0))
-                        .padding([8, 12]),
-                    button(text("+10s ⏩ (L)").size(13))
+                        .padding([6, 10])
+                        .style(yt_pill_button),
+                    button(text("+10s ⏩ (L)").size(12))
                         .on_press(Message::SeekRelative(10.0))
-                        .padding([8, 12]),
+                        .padding([6, 10])
+                        .style(yt_pill_button),
                     horizontal_space(),
-                    text(format!("Speed: {:.2}x", self.playback_speed)).size(13),
-                    button(text("0.75x").size(12))
+                    text(format!("Speed: {:.2}x", self.playback_speed))
+                        .size(12)
+                        .color(yt_colors::TEXT_SECONDARY),
+                    button(text("0.75x").size(11))
                         .on_press(Message::ChangeSpeed(0.75))
-                        .padding([5, 8]),
-                    button(text("1.0x").size(12))
+                        .padding([4, 8])
+                        .style(yt_pill_button),
+                    button(text("1.0x").size(11))
                         .on_press(Message::ChangeSpeed(1.0))
-                        .padding([5, 8]),
-                    button(text("1.25x").size(12))
+                        .padding([4, 8])
+                        .style(yt_pill_button),
+                    button(text("1.25x").size(11))
                         .on_press(Message::ChangeSpeed(1.25))
-                        .padding([5, 8]),
-                    button(text("1.5x").size(12))
+                        .padding([4, 8])
+                        .style(yt_pill_button),
+                    button(text("1.5x").size(11))
                         .on_press(Message::ChangeSpeed(1.5))
-                        .padding([5, 8]),
-                    button(text("2.0x").size(12))
+                        .padding([4, 8])
+                        .style(yt_pill_button),
+                    button(text("2.0x").size(11))
                         .on_press(Message::ChangeSpeed(2.0))
-                        .padding([5, 8]),
+                        .padding([4, 8])
+                        .style(yt_pill_button),
                 ]
-                .spacing(8)
+                .spacing(6)
                 .align_y(Alignment::Center),
             ]
-            .spacing(10),
+            .spacing(8),
         )
-        .padding(12);
+        .padding(10);
 
         // ReturnYouTubeDislike + Channel Subscription Header
         let ryd_text = if let Some(ref votes) = bundle.ryd {
             format!(
-                "👍 {}   👎 {} (Restored via RYD • {:.2}/5.0)",
+                "👍 {}   |   👎 {}   (RYD)",
                 format_number(votes.likes),
                 format_number(votes.dislikes),
-                votes.rating
             )
         } else {
-            "👍 Likes / 👎 Dislikes loading...".to_string()
+            "👍 Likes  |  👎 Dislikes".to_string()
         };
 
         let metadata_panel = container(
             column![
-                text(display_title).size(if is_tv { 22 } else { 18 }).color(Color::WHITE),
+                text(display_title)
+                    .size(if is_tv { 22 } else { 18 })
+                    .font(iced::font::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..Default::default()
+                    })
+                    .color(yt_colors::TEXT_PRIMARY),
                 row![
-                    text(format!("👤 {}", meta.author))
+                    text(&meta.author)
                         .size(15)
-                        .color(Color::from_rgb(0.6, 0.8, 1.0)),
+                        .font(iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        })
+                        .color(yt_colors::TEXT_PRIMARY),
                     button(
                         text(if is_subscribed {
-                            "✓ Subscribed (Local)"
+                            "✓ Subscribed"
                         } else {
-                            "+ Subscribe (Local)"
+                            "Subscribe"
                         })
                         .size(13)
+                        .font(iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        })
                     )
                     .on_press(Message::ToggleSubscribe {
                         channel_id: meta.channel_id.clone(),
                         channel_name: meta.author.clone(),
                     })
-                    .padding([6, 12]),
+                    .padding(if is_subscribed { [7, 14] } else { [7, 18] })
+                    .style(yt_subscribe_button(is_subscribed)),
                     horizontal_space(),
-                    text(format!("👁 {} views", format_number(meta.view_count))).size(13),
-                    horizontal_space().width(16),
-                    text(ryd_text)
-                        .size(13)
-                        .color(Color::from_rgb(0.95, 0.8, 0.35)),
+                    container(
+                        text(ryd_text)
+                            .size(13)
+                            .color(yt_colors::TEXT_PRIMARY)
+                    )
+                    .padding([6, 14])
+                    .style(yt_description_box),
                 ]
-                .spacing(12)
+                .spacing(14)
                 .align_y(Alignment::Center),
             ]
-            .spacing(8),
+            .spacing(10),
         )
-        .padding(12);
+        .padding(10);
+
+        // YouTube Description Box Card
+        let desc_snippet = if meta.description.trim().is_empty() {
+            "No description provided for this video.".to_string()
+        } else {
+            meta.description
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let description_card = container(
+            column![
+                row![
+                    text(format!("{} views", format_number(meta.view_count)))
+                        .size(13)
+                        .font(iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        })
+                        .color(yt_colors::TEXT_PRIMARY),
+                    text(" • YouTube Video").size(13).color(yt_colors::TEXT_SECONDARY),
+                ]
+                .spacing(6),
+                text(desc_snippet)
+                    .size(13)
+                    .color(yt_colors::TEXT_PRIMARY),
+            ]
+            .spacing(6),
+        )
+        .padding(14)
+        .style(yt_description_box)
+        .width(Length::Fill);
 
         // SponsorBlock Segments Timeline Panel
-        let mut sb_col = Column::new().spacing(6);
+        let mut sb_col = Column::new().spacing(8);
         sb_col = sb_col.push(
             text(format!(
                 "🛡 SponsorBlock Segments ({})",
                 bundle.sponsor_segments.len()
             ))
             .size(15)
-            .color(Color::from_rgb(0.3, 0.95, 0.6)),
+            .font(iced::font::Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+            .color(Color::from_rgb(0.2, 0.95, 0.5)),
         );
         if bundle.sponsor_segments.is_empty() {
             sb_col = sb_col.push(
-                text("No crowd-reported sponsor segments in this video.")
+                text("No sponsor segments reported for this video.")
                     .size(12)
-                    .color(Color::from_rgb(0.6, 0.6, 0.65)),
+                    .color(yt_colors::TEXT_SECONDARY),
             );
         } else {
             for seg in &bundle.sponsor_segments {
@@ -1472,9 +1657,10 @@ impl WinTubeApp {
                         .size(12)
                         .color(sponsor_category_color(&seg.category)),
                         horizontal_space(),
-                        button(text("Skip past").size(11))
+                        button(text("Skip").size(11))
                             .on_press(Message::SeekTo(seg.end_time))
-                            .padding([3, 8]),
+                            .padding([3, 8])
+                            .style(yt_pill_button),
                     ]
                     .align_y(Alignment::Center),
                 );
@@ -1483,110 +1669,143 @@ impl WinTubeApp {
 
         // Related / Next Videos Sidebar
         let mut related_col = Column::new().spacing(8);
-        related_col = related_col.push(text("⏭ Up Next / Related Videos").size(15));
+        related_col = related_col.push(
+            text("Up Next / Related Videos")
+                .size(15)
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
+        );
         for rel in bundle.next.related_videos.iter().take(10) {
             let rel_thumb: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&rel.video_id) {
                 image(handle.clone())
-                    .width(Length::Fixed(80.0))
-                    .height(Length::Fixed(48.0))
+                    .width(Length::Fixed(100.0))
+                    .height(Length::Fixed(56.0))
                     .content_fit(iced::ContentFit::Cover)
                     .into()
             } else {
-                container(text("▶").size(14).color(Color::from_rgb(0.6, 0.65, 0.8)))
-                    .width(Length::Fixed(80.0))
-                    .height(Length::Fixed(48.0))
-                    .center_x(Length::Fixed(80.0))
-                    .center_y(Length::Fixed(48.0))
+                container(text("▶").size(16).color(yt_colors::TEXT_SECONDARY))
+                    .width(Length::Fixed(100.0))
+                    .height(Length::Fixed(56.0))
+                    .center_x(Length::Fixed(100.0))
+                    .center_y(Length::Fixed(56.0))
                     .style(|_| container::Style {
-                        background: Some(Color::from_rgb(0.12, 0.14, 0.20).into()),
-                        border: iced::border::rounded(4),
+                        background: Some(yt_colors::BG_INPUT.into()),
+                        border: iced::border::rounded(6),
                         ..Default::default()
                     })
                     .into()
             };
 
+            let rel_item_content = row![
+                rel_thumb,
+                column![
+                    text(&rel.title)
+                        .size(13)
+                        .font(iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        })
+                        .color(yt_colors::TEXT_PRIMARY),
+                    text(&rel.channel_name)
+                        .size(11)
+                        .color(yt_colors::TEXT_SECONDARY),
+                    text(&rel.length_text)
+                        .size(11)
+                        .color(yt_colors::TEXT_SECONDARY),
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center);
+
             related_col = related_col.push(
-                container(
-                    row![
-                        rel_thumb,
-                        column![
-                            text(&rel.title).size(13),
-                            text(format!("{} • {}", rel.channel_name, rel.length_text))
-                                .size(11)
-                                .color(Color::from_rgb(0.6, 0.65, 0.75)),
-                        ]
-                        .width(Length::Fill),
-                        button(text("▶").size(13))
-                            .on_press(Message::SelectVideo(rel.video_id.clone()))
-                            .padding([6, 10]),
-                    ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                )
-                .padding(6),
+                button(rel_item_content)
+                    .on_press(Message::SelectVideo(rel.video_id.clone()))
+                    .padding(6)
+                    .style(yt_card_button(false))
+                    .width(Length::Fill),
             );
         }
 
         scrollable(
             column![
                 viewport_surface,
-                horizontal_rule(1),
                 transport_bar,
-                horizontal_rule(1),
                 metadata_panel,
+                description_card,
                 horizontal_rule(1),
                 row![
-                    container(sb_col).width(Length::FillPortion(1)).padding(12),
-                    vertical_rule(1),
-                    container(related_col).width(Length::FillPortion(1)).padding(12),
+                    container(sb_col).width(Length::FillPortion(1)).padding(10),
+                    container(related_col).width(Length::FillPortion(1)).padding(10),
                 ]
-                .spacing(12),
+                .spacing(16),
             ]
-            .spacing(6),
+            .spacing(10)
+            .padding([0, 10]),
         )
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+
     }
 
     fn view_subscriptions(&self, is_tv: bool) -> Element<'_, Message> {
-        let mut col = Column::new().spacing(12).padding(20);
+        let mut col = Column::new().spacing(14).padding(20);
         col = col.push(
             text("⭐ Local Privacy-Preserving Subscriptions")
-                .size(if is_tv { 24 } else { 19 }),
+                .size(if is_tv { 24 } else { 20 })
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
         );
         col = col.push(
             text("Stored locally in pure-Rust Redb storage without requiring a Google Account.")
                 .size(13)
-                .color(Color::from_rgb(0.6, 0.65, 0.75)),
+                .color(yt_colors::TEXT_SECONDARY),
         );
 
         if self.subscriptions.is_empty() {
             col = col.push(
-                text("You haven't subscribed to any channels yet. Open any video and click '+ Subscribe (Local)'.")
-                    .size(14),
+                text("You haven't subscribed to any channels yet. Open any video and click 'Subscribe'.")
+                    .size(14)
+                    .color(yt_colors::TEXT_SECONDARY),
             );
         } else {
             for sub in &self.subscriptions {
                 col = col.push(
                     container(
                         row![
-                            text(format!("👤 {}", sub.channel_name)).size(16),
+                            text(format!("👤 {}", sub.channel_name))
+                                .size(15)
+                                .font(iced::font::Font {
+                                    weight: iced::font::Weight::Bold,
+                                    ..Default::default()
+                                })
+                                .color(yt_colors::TEXT_PRIMARY),
                             horizontal_space(),
-                            button(text("Search Channel Videos").size(13))
+                            button(text("Search Channel Videos").size(12))
                                 .on_press(Message::SelectSuggestion(sub.channel_name.clone()))
-                                .padding([6, 12]),
-                            button(text("Unsubscribe").size(13))
+                                .padding([6, 12])
+                                .style(yt_pill_button),
+                            button(text("Unsubscribe").size(12))
                                 .on_press(Message::ToggleSubscribe {
                                     channel_id: sub.channel_id.clone(),
                                     channel_name: sub.channel_name.clone(),
                                 })
-                                .padding([6, 12]),
+                                .padding([6, 12])
+                                .style(yt_pill_button),
                         ]
                         .spacing(10)
                         .align_y(Alignment::Center),
                     )
-                    .padding(10),
+                    .padding(12)
+                    .style(yt_description_box),
                 );
             }
         }
@@ -1598,14 +1817,19 @@ impl WinTubeApp {
     }
 
     fn view_history(&self, is_tv: bool) -> Element<'_, Message> {
-        let mut col = Column::new().spacing(12).padding(20);
+        let mut col = Column::new().spacing(14).padding(20);
         col = col.push(
             text("🕒 Local Watch History & Resume Points")
-                .size(if is_tv { 24 } else { 19 }),
+                .size(if is_tv { 24 } else { 20 })
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
         );
 
         if self.watch_history.is_empty() {
-            col = col.push(text("No videos watched yet.").size(14));
+            col = col.push(text("No videos watched yet.").size(14).color(yt_colors::TEXT_SECONDARY));
         } else {
             for item in &self.watch_history {
                 let pct = if item.duration_seconds > 0 {
@@ -1618,7 +1842,13 @@ impl WinTubeApp {
                         column![
                             row![
                                 column![
-                                    text(&item.title).size(15),
+                                    text(&item.title)
+                                        .size(15)
+                                        .font(iced::font::Font {
+                                            weight: iced::font::Weight::Bold,
+                                            ..Default::default()
+                                        })
+                                        .color(yt_colors::TEXT_PRIMARY),
                                     text(format!(
                                         "{} • Resumes at {} / {}",
                                         item.channel_name,
@@ -1626,19 +1856,21 @@ impl WinTubeApp {
                                         format_seconds(item.duration_seconds as u64)
                                     ))
                                     .size(12)
-                                    .color(Color::from_rgb(0.65, 0.72, 0.85)),
+                                    .color(yt_colors::TEXT_SECONDARY),
                                 ]
                                 .width(Length::Fill),
-                                button(text("▶ Resume").size(13))
+                                button(text("▶ Resume").size(12))
                                     .on_press(Message::SelectVideo(item.video_id.clone()))
-                                    .padding([6, 14]),
+                                    .padding([6, 14])
+                                    .style(yt_pill_button),
                             ]
                             .align_y(Alignment::Center),
                             progress_bar(0.0..=100.0, pct).height(4),
                         ]
-                        .spacing(6),
+                        .spacing(8),
                     )
-                    .padding(10),
+                    .padding(12)
+                    .style(yt_description_box),
                 );
             }
         }
@@ -1655,24 +1887,35 @@ impl WinTubeApp {
                 row![
                     text("✅ Connected to YouTube TV").size(16).color(Color::from_rgb(0.2, 0.95, 0.5)),
                     horizontal_space(),
-                    button(text("Sign Out").size(13))
+                    button(text("Sign Out").size(12))
                         .on_press(Message::SignOut)
-                        .padding([6, 14]),
+                        .padding([6, 14])
+                        .style(yt_pill_button),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
                 text("Account session is active. TVHTML5 4K/8K DASH streams are fully unlocked and bot-check free.")
                     .size(13)
-                    .color(Color::from_rgb(0.65, 0.75, 0.85)),
+                    .color(yt_colors::TEXT_SECONDARY),
             ]
             .spacing(8)
             .into()
         } else if let Some(ref code) = self.device_auth_code {
             column![
-                text(format!("1. Visit {} on your mobile phone or PC browser", code.verification_url)).size(15),
+                text(format!("1. Visit {} on your mobile phone or PC browser", code.verification_url))
+                    .size(14)
+                    .color(yt_colors::TEXT_PRIMARY),
                 row![
-                    text("2. Enter TV Activation Code: ").size(16),
-                    text(&code.user_code).size(26).color(Color::from_rgb(0.2, 0.95, 0.5)),
+                    text("2. Enter TV Activation Code: ")
+                        .size(15)
+                        .color(yt_colors::TEXT_PRIMARY),
+                    text(&code.user_code)
+                        .size(24)
+                        .font(iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        })
+                        .color(Color::from_rgb(0.2, 0.95, 0.5)),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -1687,7 +1930,8 @@ impl WinTubeApp {
                     horizontal_space(),
                     button(text("Cancel").size(12))
                         .on_press(Message::CancelTvAuth)
-                        .padding([4, 10]),
+                        .padding([4, 10])
+                        .style(yt_pill_button),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1698,76 +1942,133 @@ impl WinTubeApp {
             column![
                 text("Sign in using Google's official TV device code (SmartTube method). No password or cookies needed.")
                     .size(13)
-                    .color(Color::from_rgb(0.65, 0.75, 0.85)),
-                button(text("🔑 Generate YouTube TV OAuth2 Activation Code").size(14))
+                    .color(yt_colors::TEXT_SECONDARY),
+                button(text("🔑 Generate YouTube TV OAuth2 Activation Code").size(13))
                     .on_press(Message::RequestTvDeviceCode)
-                    .padding([8, 14]),
+                    .padding([8, 16])
+                    .style(yt_pill_button),
             ]
             .spacing(8)
             .into()
         };
 
+        let res_btn = |label: &'static str, res: MaxResolution| {
+            let is_sel = self.max_resolution == res;
+            button(
+                text(label)
+                    .size(12)
+                    .font(if is_sel {
+                        iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        }
+                    } else {
+                        iced::font::Font::DEFAULT
+                    })
+            )
+            .on_press(Message::SetMaxResolution(res))
+            .padding([6, 14])
+            .style(if is_sel { yt_subscribe_button(false) } else { yt_subscribe_button(true) })
+        };
+
+        let codec_btn = |label: &'static str, codec: VideoCodecPreference| {
+            let is_sel = self.codec_preference == codec;
+            button(
+                text(label)
+                    .size(12)
+                    .font(if is_sel {
+                        iced::font::Font {
+                            weight: iced::font::Weight::Bold,
+                            ..Default::default()
+                        }
+                    } else {
+                        iced::font::Font::DEFAULT
+                    })
+            )
+            .on_press(Message::SetCodecPreference(codec))
+            .padding([6, 14])
+            .style(if is_sel { yt_subscribe_button(false) } else { yt_subscribe_button(true) })
+        };
+
         let col = column![
-            text("⚙ SmartTube Engine & Quality Settings").size(if is_tv { 24 } else { 20 }),
+            text("⚙ WinTube Engine & Quality Settings")
+                .size(if is_tv { 24 } else { 20 })
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
             horizontal_rule(1),
-            text("Video Resolution Ceiling").size(16),
+            text("Video Resolution Ceiling")
+                .size(15)
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
             row![
-                button(text("1080p Full HD").size(13))
-                    .on_press(Message::SetMaxResolution(MaxResolution::Res1080p))
-                    .padding([6, 12]),
-                button(text("1440p QHD").size(13))
-                    .on_press(Message::SetMaxResolution(MaxResolution::Res1440p))
-                    .padding([6, 12]),
-                button(text("2160p 4K UHD (Recommended)").size(13))
-                    .on_press(Message::SetMaxResolution(MaxResolution::Res2160p_4K))
-                    .padding([6, 12]),
-                button(text("4320p 8K").size(13))
-                    .on_press(Message::SetMaxResolution(MaxResolution::Res4320p_8K))
-                    .padding([6, 12]),
+                res_btn("1080p Full HD", MaxResolution::Res1080p),
+                res_btn("1440p QHD", MaxResolution::Res1440p),
+                res_btn("2160p 4K UHD (Recommended)", MaxResolution::Res2160p_4K),
+                res_btn("4320p 8K", MaxResolution::Res4320p_8K),
             ]
             .spacing(10),
             horizontal_rule(1),
-            text("Hardware Video Codec Preference (D3D11VA)").size(16),
+            text("Hardware Video Codec Preference (D3D11VA)")
+                .size(15)
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
             row![
-                button(text("AV1 (RTX 30/40, RX 6000+, Arc)").size(13))
-                    .on_press(Message::SetCodecPreference(VideoCodecPreference::Av1Preferred))
-                    .padding([6, 12]),
-                button(text("VP9 (Universal 4K60 GPU Decode)").size(13))
-                    .on_press(Message::SetCodecPreference(VideoCodecPreference::Vp9Preferred))
-                    .padding([6, 12]),
-                button(text("H.264 / AVC1 (Legacy Battery Saver)").size(13))
-                    .on_press(Message::SetCodecPreference(VideoCodecPreference::Avc1Preferred))
-                    .padding([6, 12]),
+                codec_btn("AV1 (RTX 30/40, RX 6000+, Arc)", VideoCodecPreference::Av1Preferred),
+                codec_btn("VP9 (Universal 4K60 GPU Decode)", VideoCodecPreference::Vp9Preferred),
+                codec_btn("H.264 / AVC1 (Legacy Battery Saver)", VideoCodecPreference::Avc1Preferred),
             ]
             .spacing(10),
             horizontal_rule(1),
-            text("SmartTube Content Filtering & Audio Pipeline").size(16),
+            text("SmartTube Content Filtering & Audio Pipeline")
+                .size(15)
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
             row![
                 button(
                     text(format!(
                         "SponsorBlock Auto-Skip: {}",
                         if self.sponsorblock_enabled { "ENABLED" } else { "DISABLED" }
                     ))
-                    .size(13)
+                    .size(12)
                 )
                 .on_press(Message::ToggleSponsorBlock)
-                .padding([8, 14]),
+                .padding([8, 14])
+                .style(yt_pill_button),
                 button(
                     text(format!(
                         "Loudness Normalization (ebur128): {}",
                         if self.audio_normalization { "ENABLED" } else { "DISABLED" }
                     ))
-                    .size(13)
+                    .size(12)
                 )
                 .on_press(Message::ToggleAudioNormalization)
-                .padding([8, 14]),
+                .padding([8, 14])
+                .style(yt_pill_button),
             ]
             .spacing(12),
             horizontal_rule(1),
-            text("Google TV Account Sign-In (Device Code Flow — No Play Services)").size(16),
+            text("YouTube TV Account Sign-In (Device Code Flow — No Play Services)")
+                .size(15)
+                .font(iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                })
+                .color(yt_colors::TEXT_PRIMARY),
             auth_section,
         ]
-        .spacing(14)
+        .spacing(16)
         .padding(20);
 
         scrollable(col)
@@ -1783,17 +2084,28 @@ impl WinTubeApp {
 
         container(
             row![
-                text("🎬 Mini-Player:")
+                text("▶ Mini-Player:")
                     .size(13)
-                    .color(Color::from_rgb(0.3, 0.95, 0.6)),
-                text(&bundle.playback.metadata.title).size(13),
+                    .font(iced::font::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..Default::default()
+                    })
+                    .color(yt_colors::YT_RED),
+                text(&bundle.playback.metadata.title)
+                    .size(13)
+                    .font(iced::font::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..Default::default()
+                    })
+                    .color(yt_colors::TEXT_PRIMARY),
                 horizontal_space(),
                 text(format!(
                     "{} / {}",
                     format_seconds(self.position_secs as u64),
                     format_seconds(self.duration_secs as u64)
                 ))
-                .size(12),
+                .size(12)
+                .color(yt_colors::TEXT_SECONDARY),
                 button(
                     text(if self.playback_state == PlaybackState::Playing {
                         "⏸"
@@ -1803,17 +2115,29 @@ impl WinTubeApp {
                     .size(13)
                 )
                 .on_press(Message::TogglePlayPause)
-                .padding([4, 10]),
+                .padding([4, 10])
+                .style(yt_pill_button),
                 button(text("Return to Player").size(12))
                     .on_press(Message::SwitchTab(ActiveNavTab::NowPlaying))
-                    .padding([4, 10]),
+                    .padding([4, 12])
+                    .style(yt_pill_button),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
         )
         .padding([8, 16])
+        .style(|_| container::Style {
+            background: Some(yt_colors::BG_APP.into()),
+            border: iced::Border {
+                color: yt_colors::BORDER_COLOR,
+                width: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .into()
     }
+
 }
 
 fn format_seconds(total_secs: u64) -> String {
@@ -1845,5 +2169,244 @@ fn sponsor_category_color(cat: &SponsorCategory) -> Color {
         SponsorCategory::Intro => Color::from_rgb(0.0, 1.0, 1.0),
         SponsorCategory::Outro => Color::from_rgb(0.2, 0.4, 1.0),
         _ => Color::from_rgb(0.9, 0.6, 0.2),
+    }
+}
+
+// =========================================================================
+// YOUTUBE THEME STYLING HELPERS
+// =========================================================================
+
+pub mod yt_colors {
+    use iced::Color;
+    pub const BG_APP: Color = Color::from_rgb(0.059, 0.059, 0.059); // #0F0F0F
+    pub const BG_INPUT: Color = Color::from_rgb(0.071, 0.071, 0.071); // #121212
+    pub const BG_BUTTON_SEARCH: Color = Color::from_rgb(0.133, 0.133, 0.133); // #222222
+    pub const BG_PILL: Color = Color::from_rgb(0.153, 0.153, 0.153); // #272727
+    pub const BG_PILL_HOVER: Color = Color::from_rgb(0.235, 0.235, 0.235); // #3C3C3C
+    pub const BG_CARD_HOVER: Color = Color::from_rgb(0.129, 0.129, 0.129); // #212121
+    pub const BORDER_COLOR: Color = Color::from_rgb(0.188, 0.188, 0.188); // #303030
+    pub const TEXT_PRIMARY: Color = Color::from_rgb(0.945, 0.945, 0.945); // #F1F1F1
+    pub const TEXT_SECONDARY: Color = Color::from_rgb(0.667, 0.667, 0.667); // #AAAAAA
+    pub const YT_RED: Color = Color::from_rgb(1.0, 0.0, 0.0); // #FF0000
+    pub const YT_BLUE_FOCUS: Color = Color::from_rgb(0.243, 0.651, 1.0); // #3EA6FF
+}
+
+fn yt_search_input(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: yt_colors::BG_INPUT.into(),
+        border: iced::Border {
+            color: yt_colors::BORDER_COLOR,
+            width: 1.0,
+            radius: iced::border::radius(20),
+        },
+        icon: yt_colors::TEXT_SECONDARY,
+        placeholder: yt_colors::TEXT_SECONDARY,
+        value: yt_colors::TEXT_PRIMARY,
+        selection: Color::from_rgb(0.2, 0.4, 0.8),
+    }
+}
+
+
+fn yt_pill_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => yt_colors::BG_PILL_HOVER,
+        button::Status::Pressed => Color::from_rgb(0.3, 0.3, 0.3),
+        _ => yt_colors::BG_PILL,
+    };
+    button::Style {
+        background: Some(bg.into()),
+        text_color: yt_colors::TEXT_PRIMARY,
+        border: iced::border::rounded(18),
+        shadow: Default::default(),
+    }
+}
+
+fn yt_subscribe_button(is_subscribed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        if is_subscribed {
+            let bg = match status {
+                button::Status::Hovered => yt_colors::BG_PILL_HOVER,
+                _ => yt_colors::BG_PILL,
+            };
+            button::Style {
+                background: Some(bg.into()),
+                text_color: yt_colors::TEXT_PRIMARY,
+                border: iced::border::rounded(18),
+                shadow: Default::default(),
+            }
+        } else {
+            let bg = match status {
+                button::Status::Hovered => Color::from_rgb(0.85, 0.85, 0.85),
+                _ => yt_colors::TEXT_PRIMARY,
+            };
+            button::Style {
+                background: Some(bg.into()),
+                text_color: yt_colors::BG_APP,
+                border: iced::border::rounded(18),
+                shadow: Default::default(),
+            }
+        }
+    }
+}
+
+fn yt_nav_button(is_active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        if is_active {
+            button::Style {
+                background: Some(yt_colors::BG_PILL.into()),
+                text_color: Color::WHITE,
+                border: iced::border::rounded(10),
+                shadow: Default::default(),
+            }
+        } else {
+            let bg = match status {
+                button::Status::Hovered => Some(yt_colors::BG_CARD_HOVER.into()),
+                _ => None,
+            };
+            button::Style {
+                background: bg,
+                text_color: yt_colors::TEXT_SECONDARY,
+                border: iced::border::rounded(10),
+                shadow: Default::default(),
+            }
+        }
+    }
+}
+
+fn yt_card_button(is_focused: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let bg = match status {
+            button::Status::Hovered | button::Status::Pressed => Some(yt_colors::BG_CARD_HOVER.into()),
+            _ if is_focused => Some(yt_colors::BG_PILL.into()),
+            _ => None,
+        };
+        let border = if is_focused {
+            iced::Border {
+                color: yt_colors::YT_BLUE_FOCUS,
+                width: 2.0,
+                radius: iced::border::radius(12),
+            }
+        } else {
+            iced::border::rounded(12)
+        };
+        button::Style {
+            background: bg,
+            text_color: yt_colors::TEXT_PRIMARY,
+            border,
+            shadow: Default::default(),
+        }
+    }
+}
+
+fn yt_search_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => yt_colors::BG_PILL_HOVER,
+        button::Status::Pressed => Color::from_rgb(0.3, 0.3, 0.3),
+        _ => yt_colors::BG_BUTTON_SEARCH,
+    };
+    button::Style {
+        background: Some(bg.into()),
+        text_color: yt_colors::TEXT_PRIMARY,
+        border: iced::Border {
+            color: yt_colors::BORDER_COLOR,
+            width: 1.0,
+            radius: iced::border::radius(20),
+        },
+        shadow: Default::default(),
+    }
+}
+
+fn yt_duration_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.85).into()),
+        border: iced::border::rounded(4),
+        text_color: Some(Color::WHITE),
+        ..Default::default()
+    }
+}
+
+fn yt_live_badge(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb(0.8, 0.0, 0.0).into()),
+        border: iced::border::rounded(3),
+        text_color: Some(Color::WHITE),
+        ..Default::default()
+    }
+}
+
+fn yt_description_box(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(yt_colors::BG_PILL.into()),
+        border: iced::border::rounded(12),
+        text_color: Some(yt_colors::TEXT_PRIMARY),
+        ..Default::default()
+    }
+}
+
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wintube_innertube::VideoMetadata;
+
+    #[test]
+    fn test_all_tabs_and_views_no_crash() {
+        let (mut app, _) = WinTubeApp::new();
+
+        // Check tabs in Desktop & TV mode
+        for form in [UiFormFactor::Desktop, UiFormFactor::TvCouch] {
+            app.form_factor = form;
+            for tab in [
+                ActiveNavTab::Home,
+                ActiveNavTab::Search,
+                ActiveNavTab::Subscriptions,
+                ActiveNavTab::History,
+                ActiveNavTab::NowPlaying,
+                ActiveNavTab::Settings,
+            ] {
+                app.active_tab = tab;
+                let _ = app.view();
+            }
+        }
+
+        // Test with active video bundle loaded
+        let bundle = LoadedVideoBundle {
+            playback: VideoPlaybackInfo {
+                metadata: VideoMetadata {
+                    video_id: "test12345".to_string(),
+                    title: "Test Video".to_string(),
+                    author: "Test Channel".to_string(),
+                    channel_id: "UCtest".to_string(),
+                    duration_seconds: 300,
+                    view_count: 1000,
+                    description: "Test".to_string(),
+                    thumbnails: vec![],
+                    is_live: false,
+                },
+                video_streams: vec![],
+                audio_streams: vec![],
+                hls_manifest_url: None,
+                dash_manifest_url: None,
+            },
+            next: VideoNextDetails::default(),
+            ryd: None,
+            sponsor_segments: vec![],
+            clean_title: None,
+        };
+        let _ = app.activate_video_bundle(bundle);
+
+        for form in [UiFormFactor::Desktop, UiFormFactor::TvCouch] {
+            app.form_factor = form;
+            for tab in [
+                ActiveNavTab::Home,
+                ActiveNavTab::NowPlaying,
+                ActiveNavTab::Settings,
+            ] {
+                app.active_tab = tab;
+                let _ = app.view();
+            }
+        }
     }
 }
