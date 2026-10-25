@@ -1083,10 +1083,11 @@ impl WinTubeApp {
                     text("").size(11)
                 };
 
+                let thumb_h = if is_tv { 190.0 } else { 150.0 };
                 let thumbnail_view: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&video.video_id) {
                     image(handle.clone())
                         .width(Length::Fill)
-                        .height(Length::Fixed(if is_tv { 190.0 } else { 150.0 }))
+                        .height(Length::Fixed(thumb_h))
                         .content_fit(iced::ContentFit::Cover)
                         .into()
                 } else {
@@ -1101,9 +1102,9 @@ impl WinTubeApp {
                         .align_x(Alignment::Center),
                     )
                     .width(Length::Fill)
-                    .height(Length::Fixed(if is_tv { 190.0 } else { 150.0 }))
+                    .height(Length::Fixed(thumb_h))
                     .center_x(Length::Fill)
-                    .center_y(Length::Fill)
+                    .center_y(Length::Fixed(thumb_h))
                     .style(|_| container::Style {
                         background: Some(Color::from_rgb(0.12, 0.14, 0.20).into()),
                         border: iced::border::rounded(6),
