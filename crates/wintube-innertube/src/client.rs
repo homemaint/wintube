@@ -16,6 +16,12 @@ pub enum AppClient {
     MWeb,
     /// Android Embedded client
     AndroidEmbed,
+    /// Apple Vision Pro client (`VISIONOS`).
+    ///
+    /// Delivers un-attested progressive/DASH streams that are **not** subject
+    /// to the ~32 MiB truncation applied to anonymous IOS/ANDROID_VR media
+    /// requests, which makes it the preferred client for playback.
+    VisionOs,
 }
 
 impl AppClient {
@@ -27,6 +33,7 @@ impl AppClient {
             AppClient::Web => "WEB",
             AppClient::MWeb => "MWEB",
             AppClient::AndroidEmbed => "ANDROID_EMBEDDED_PLAYER",
+            AppClient::VisionOs => "VISIONOS",
         }
     }
 
@@ -38,6 +45,7 @@ impl AppClient {
             AppClient::Web => "2.20240910.05.00",
             AppClient::MWeb => "2.20240910.05.00",
             AppClient::AndroidEmbed => "19.38.3",
+            AppClient::VisionOs => "1.02",
         }
     }
 
@@ -49,6 +57,7 @@ impl AppClient {
             AppClient::Web => 1,
             AppClient::MWeb => 2,
             AppClient::AndroidEmbed => 56,
+            AppClient::VisionOs => 101,
         }
     }
 
@@ -60,6 +69,7 @@ impl AppClient {
             AppClient::Web => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             AppClient::MWeb => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
             AppClient::AndroidEmbed => "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
+            AppClient::VisionOs => "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
         }
     }
 

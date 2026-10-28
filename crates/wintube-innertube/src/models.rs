@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::client::AppClient;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InnertubeContext {
     pub client: ClientContext,
@@ -48,6 +50,12 @@ pub struct RequestContext {
 
 // ----------------- Video / Stream Info Models -----------------
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseContext {
+    pub visitor_data: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerResponse {
@@ -55,6 +63,8 @@ pub struct PlayerResponse {
     pub video_details: Option<VideoDetails>,
     pub streaming_data: Option<StreamingData>,
     pub captions: Option<CaptionsContainer>,
+    #[serde(default)]
+    pub response_context: Option<ResponseContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,7 +217,11 @@ impl TextRunContainer {
             return text.clone();
         }
         if let Some(ref runs) = self.runs {
-            return runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("");
+            return runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join("");
         }
         String::new()
     }
@@ -256,4 +270,12 @@ pub struct VideoPlaybackInfo {
     pub audio_streams: Vec<ResolvedStream>,
     pub hls_manifest_url: Option<String>,
     pub dash_manifest_url: Option<String>,
+    /// Innertube client that produced the stream URLs. Media requests sent to
+    /// the CDN must use the matching user agent.
+    #[serde(default = "default_playback_client")]
+    pub client: AppClient,
+}
+
+fn default_playback_client() -> AppClient {
+    AppClient::Ios
 }

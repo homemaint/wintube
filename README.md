@@ -50,11 +50,13 @@ wintube/
 
 ### 1. `wintube-innertube`
 - Implements spoofing for multiple Innertube clients:
-  - `TVHTML5` (`client_version: 7.20230405.08.01`): Used for ad-free raw stream extraction and device code authorization.
+  - `VISIONOS` (`client_version: 1.02`, client id `101`): **primary playback client**. Its media URLs are not capped at ~32 MiB like the anonymous phone/TV clients, expose the complete 4K/HDR format ladder (VP9 / VP9.2 / H.264 / Opus), and serve open-ended range requests. Requires the watch-page `visitorData` (`X-Goog-Visitor-Id`) and player signature timestamp (`STS`) inside `playbackContext`.
+  - `TVHTML5` (`client_version: 7.20260707.07.00`): Used for ad-free raw stream extraction and device code authorization.
   - `ANDROID_VR`: Reliable high-bitrate fallback for VP9/AV1 4K 60fps stream descriptors.
   - `IOS`: High compatibility H.264/AAC streams.
   - `WEB`: Autocomplete suggestions and general feed queries.
 - In-memory MPEG-DASH manifest builder converts adaptive audio/video stream segments into standard MPD manifests.
+- Cascades VISIONOS → IOS → ANDROID_VR → TVHTML5 → WEB so content VISIONOS cannot play still resolves.
 
 ### 2. `wintube-services`
 - **SponsorBlock**: Queries Ajay's SponsorBlock API using 4-byte (8 hex character) SHA-256 hash prefix to prevent the server from tracking the user's viewing history. Automatically seeks past sponsored segments.
@@ -63,12 +65,14 @@ wintube/
 - **Storage Engine**: Built on pure-Rust `redb v2.6`. Zero C dependencies, ACID-compliant, crash-safe local storage for watch history, playback progress, and channel subscriptions.
 
 ### 3. `wintube-player`
-- **Hardware Decoders**: Integrates with hardware decoders (`mpv` / `libmpv` or `ffplay`) with `--hwdec=d3d11va`, enabling hardware decoding on Nvidia, AMD, and Intel GPUs.
-- **Track Selection**: Intelligent heuristics selecting optimal resolution (720p, 1080p, 1440p, 4K, 8K) and preferred codec (`AV1`, `VP9`, or `AVC1/H.264`).
+- **Embedded mpv Playback**: Spawns `bin/mpv.exe` with a private JSON IPC pipe, embeds its video surface into the WinTube window (`--wid`), and drives play/pause/seek/speed from the Iced UI.
+- **Hardware Decoders**: `--hwdec=auto-safe --gpu-context=d3d11 --vo=gpu-next`, enabling hardware decoding on Nvidia, AMD, and Intel GPUs.
+- **Track Selection**: Intelligent heuristics selecting optimal resolution (720p, 1080p, 1440p, 4K, 8K) and preferred codec (`AV1`, `VP9`, `H.264`).
 - **Windows Sleep Inhibitor**: Automatically calls Win32 API `SetThreadExecutionState` on playback start to prevent screensavers and PC sleep, releasing it on pause/stop.
 
 ### 4. `wintube-app`
 - GPU-accelerated interface built with **Iced v0.13** on DirectX 12 (`wgpu`).
+- **Loopback media relay** (`src/relay.rs`): a tiny HTTP/1.1 server on `127.0.0.1` that adapts googlevideo's range/redirect behaviour to what FFmpeg expects. It forwards open-ended reads as one streaming request (VISIONOS), falls back to bounded ranges for older clients, follows CDN redirects, and re-resolves the stream through innertube when a URL starts answering `403`.
 - Dual responsive view layout:
   - **Desktop Mode**: Dense 3-column video grid, fine seekbars, mouse hover actions, and keyboard shortcuts.
   - **10-Foot TV Mode**: High-contrast 2-column cards, magnified typography, remote control D-Pad/arrow-key focus handling.
@@ -109,6 +113,9 @@ cd wintube
 # Run tests
 cargo test -p wintube-innertube --test dash_test
 cargo test -p wintube-services --test storage_test
+
+# Live stream/relay check (network required)
+cargo test -p wintube-app --test relay_live -- --ignored --nocapture
 
 # Launch WinTube GUI
 cargo run -p wintube-app

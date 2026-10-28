@@ -2,25 +2,28 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use iced::event::{self, Event};
-use iced::keyboard::{self, Key, key::Named};
+use iced::keyboard::{self, key::Named, Key};
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, image, progress_bar, row, scrollable,
-    slider, text, text_input, vertical_rule, Column, Row,
+    button, column, container, horizontal_rule, horizontal_space, image, progress_bar, row,
+    scrollable, slider, text, text_input, vertical_rule, Column, Row,
 };
 use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme};
 use tracing::error;
 
 use wintube_innertube::{
-    DeviceAuthCode, InnertubeClient, OAuthToken, SignInService, VideoCardItem, VideoNextDetails,
-    VideoPlaybackInfo,
+    AppClient, DeviceAuthCode, InnertubeClient, OAuthToken, ResolvedStream, SignInService,
+    VideoCardItem, VideoNextDetails, VideoPlaybackInfo,
 };
 use wintube_player::{
+    embedded::{FOOTER_H, SIDEBAR_W_DESKTOP, SIDEBAR_W_TV, TOPBAR_H, VIDEO_BAND_H},
     MaxResolution, MediaEngine, PlaybackState, TrackSelector, VideoCodecPreference,
 };
 use wintube_services::{
     DeArrowService, DislikeStats, LocalSubscription, ReturnYouTubeDislikeService,
     SponsorBlockService, SponsorCategory, SponsorSegment, StorageEngine, WatchHistoryItem,
 };
+
+use crate::relay::{StreamRelay, UpstreamInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiFormFactor {
@@ -71,6 +74,7 @@ pub enum Message {
     SetCodecPreference(VideoCodecPreference),
     ToggleSponsorBlock,
     ToggleAudioNormalization,
+    LaunchEmbeddedViewport,
     LaunchExternalHardwareViewport,
     ExternalViewportResult(Result<String, String>),
 
@@ -129,6 +133,7 @@ pub struct WinTubeApp {
     // Pre-Resolve Cache & Active Video Playback
     resolved_cache: HashMap<String, LoadedVideoBundle>,
     active_video: Option<LoadedVideoBundle>,
+    relay: Option<StreamRelay>,
     playback_state: PlaybackState,
     position_secs: f64,
     duration_secs: f64,
@@ -182,6 +187,19 @@ impl WinTubeApp {
             .build()
             .unwrap_or_default();
 
+        // Loopback relay that adapts googlevideo's bounded-range requirements
+        // to the plain HTTP stream mpv/FFmpeg expects.
+        let relay = match StreamRelay::start() {
+            Ok(relay) => {
+                tracing::info!("Media relay ready at {}", relay.base_url());
+                Some(relay)
+            }
+            Err(err) => {
+                tracing::warn!("Media relay unavailable ({err}); using direct stream URLs");
+                None
+            }
+        };
+
         let client_clone = innertube.clone();
         let feed_task = Task::perform(
             async move {
@@ -203,7 +221,15 @@ impl WinTubeApp {
             Task::none()
         };
 
-        let initial_task = Task::batch([feed_task, restore_task]);
+        let autoplay_task = match std::env::var("WINTUBE_AUTOPLAY_VIDEO") {
+            Ok(vid) if !vid.trim().is_empty() => {
+                let vid = vid.trim().to_string();
+                Task::perform(async move { vid }, Message::SelectVideo)
+            }
+            _ => Task::none(),
+        };
+
+        let initial_task = Task::batch([feed_task, restore_task, autoplay_task]);
 
         let app = Self {
             innertube,
@@ -231,6 +257,7 @@ impl WinTubeApp {
             http_client,
             resolved_cache: HashMap::new(),
             active_video: None,
+            relay,
             playback_state: PlaybackState::Stopped,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -259,9 +286,15 @@ impl WinTubeApp {
             UiFormFactor::TvCouch => "10-Foot TV Couch Mode",
         };
         if let Some(ref bundle) = self.active_video {
-            format!("WinTube ({}) - ▶ {}", mode_str, bundle.playback.metadata.title)
+            format!(
+                "WinTube ({}) - ▶ {}",
+                mode_str, bundle.playback.metadata.title
+            )
         } else {
-            format!("WinTube ({}) - High-Performance Rust YouTube Client", mode_str)
+            format!(
+                "WinTube ({}) - High-Performance Rust YouTube Client",
+                mode_str
+            )
         }
     }
 
@@ -315,8 +348,13 @@ impl WinTubeApp {
                     UiFormFactor::TvCouch => UiFormFactor::Desktop,
                 };
                 self.status_banner = match self.form_factor {
-                    UiFormFactor::Desktop => "Switched to Desktop PC Mode (Mouse + Keyboard)".to_string(),
-                    UiFormFactor::TvCouch => "Switched to SmartTube 10-Foot TV Mode (Use Arrow Keys / Enter / Backspace)".to_string(),
+                    UiFormFactor::Desktop => {
+                        "Switched to Desktop PC Mode (Mouse + Keyboard)".to_string()
+                    }
+                    UiFormFactor::TvCouch => {
+                        "Switched to SmartTube 10-Foot TV Mode (Use Arrow Keys / Enter / Backspace)"
+                            .to_string()
+                    }
                 };
                 Task::none()
             }
@@ -377,13 +415,18 @@ impl WinTubeApp {
                 self.is_loading_feed = false;
                 match res {
                     Ok(videos) => {
-                        self.status_banner = format!("Loaded {} videos via Innertube", videos.len());
+                        self.status_banner =
+                            format!("Loaded {} videos via Innertube", videos.len());
                         self.feed_videos = videos.clone();
                         self.focused_card_index = 0;
 
                         let dl_items: Vec<(String, String)> = videos
                             .iter()
-                            .filter_map(|v| v.thumbnail_url.as_ref().map(|u| (v.video_id.clone(), u.clone())))
+                            .filter_map(|v| {
+                                v.thumbnail_url
+                                    .as_ref()
+                                    .map(|u| (v.video_id.clone(), u.clone()))
+                            })
                             .collect();
 
                         let client = self.http_client.clone();
@@ -422,7 +465,8 @@ impl WinTubeApp {
 
             Message::ThumbnailsLoaded(items) => {
                 for (id, bytes) in items {
-                    self.thumbnail_cache.insert(id, image::Handle::from_bytes(bytes));
+                    self.thumbnail_cache
+                        .insert(id, image::Handle::from_bytes(bytes));
                 }
                 Task::none()
             }
@@ -440,7 +484,10 @@ impl WinTubeApp {
                     return self.activate_video_bundle(bundle);
                 }
 
-                self.status_banner = format!("Extracting 4K/8K DASH streams & SponsorBlock for {}...", video_id);
+                self.status_banner = format!(
+                    "Extracting 4K/8K DASH streams & SponsorBlock for {}...",
+                    video_id
+                );
                 self.active_tab = ActiveNavTab::NowPlaying;
 
                 let client = self.innertube.clone();
@@ -487,7 +534,11 @@ impl WinTubeApp {
                         .next
                         .related_videos
                         .iter()
-                        .filter_map(|v| v.thumbnail_url.as_ref().map(|u| (v.video_id.clone(), u.clone())))
+                        .filter_map(|v| {
+                            v.thumbnail_url
+                                .as_ref()
+                                .map(|u| (v.video_id.clone(), u.clone()))
+                        })
                         .collect();
 
                     if !rel_items.is_empty() {
@@ -533,7 +584,11 @@ impl WinTubeApp {
 
             Message::TogglePlayPause => {
                 self.playback_state = self.player.toggle_play_pause();
-                Task::none()
+                if self.playback_state == PlaybackState::Playing && !self.player.is_child_alive() {
+                    self.launch_embedded_or_popout()
+                } else {
+                    Task::none()
+                }
             }
 
             Message::SeekTo(pos) => {
@@ -549,7 +604,10 @@ impl WinTubeApp {
 
             Message::ChangeSpeed(speed) => {
                 self.playback_speed = self.player.set_speed(speed);
-                self.status_banner = format!("Playback speed set to {:.2}x (pitch-corrected)", self.playback_speed);
+                self.status_banner = format!(
+                    "Playback speed set to {:.2}x (pitch-corrected)",
+                    self.playback_speed
+                );
                 Task::none()
             }
 
@@ -575,6 +633,8 @@ impl WinTubeApp {
                 Task::none()
             }
 
+            Message::LaunchEmbeddedViewport => self.launch_embedded_or_popout(),
+
             Message::LaunchExternalHardwareViewport => {
                 let player = self.player.clone();
                 Task::perform(
@@ -587,7 +647,8 @@ impl WinTubeApp {
                 match res {
                     Ok(engine_name) => {
                         self.active_decoder_label = engine_name.clone();
-                        self.status_banner = format!("Launched Hardware Video Viewport: {}", engine_name);
+                        self.status_banner =
+                            format!("Launched Hardware Video Viewport: {}", engine_name);
                     }
                     Err(err) => {
                         self.status_banner = format!("Viewport note: {}", err);
@@ -600,12 +661,17 @@ impl WinTubeApp {
                 channel_id,
                 channel_name,
             } => {
-                let is_subbed = self.subscriptions.iter().any(|s| s.channel_id == channel_id);
+                let is_subbed = self
+                    .subscriptions
+                    .iter()
+                    .any(|s| s.channel_id == channel_id);
                 if is_subbed {
                     let _ = self.storage.remove_subscription(&channel_id);
                     self.status_banner = format!("Unsubscribed from {}", channel_name);
                 } else {
-                    let _ = self.storage.add_subscription(&channel_id, &channel_name, None);
+                    let _ = self
+                        .storage
+                        .add_subscription(&channel_id, &channel_name, None);
                     self.status_banner = format!("Subscribed locally to {}", channel_name);
                 }
                 self.subscriptions = self.storage.get_subscriptions().unwrap_or_default();
@@ -617,34 +683,42 @@ impl WinTubeApp {
                 self.auth_poll_active = true;
                 self.status_banner = "Requesting YouTube TV OAuth2 activation code...".to_string();
                 Task::perform(
-                    async move { signin.request_device_code().await.map_err(|e| e.to_string()) },
+                    async move {
+                        signin
+                            .request_device_code()
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
                     Message::TvDeviceCodeReceived,
                 )
             }
 
-            Message::TvDeviceCodeReceived(res) => {
-                match res {
-                    Ok(code) => {
-                        self.status_banner = format!(
-                            "Go to {} and enter code: {}",
-                            code.verification_url, code.user_code
-                        );
-                        self.device_auth_code = Some(code.clone());
-                        self.auth_poll_active = true;
+            Message::TvDeviceCodeReceived(res) => match res {
+                Ok(code) => {
+                    self.status_banner = format!(
+                        "Go to {} and enter code: {}",
+                        code.verification_url, code.user_code
+                    );
+                    self.device_auth_code = Some(code.clone());
+                    self.auth_poll_active = true;
 
-                        let signin = self.signin.clone();
-                        Task::perform(
-                            async move { signin.wait_for_token(&code).await.map_err(|e| e.to_string()) },
-                            Message::TvAuthCompleted,
-                        )
-                    }
-                    Err(e) => {
-                        self.status_banner = format!("OAuth code error: {}", e);
-                        self.auth_poll_active = false;
-                        Task::none()
-                    }
+                    let signin = self.signin.clone();
+                    Task::perform(
+                        async move {
+                            signin
+                                .wait_for_token(&code)
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        Message::TvAuthCompleted,
+                    )
                 }
-            }
+                Err(e) => {
+                    self.status_banner = format!("OAuth code error: {}", e);
+                    self.auth_poll_active = false;
+                    Task::none()
+                }
+            },
 
             Message::TvAuthCompleted(res) => {
                 self.auth_poll_active = false;
@@ -655,7 +729,9 @@ impl WinTubeApp {
                         let access_tok = token.access_token.clone();
                         self.is_signed_in = true;
                         self.device_auth_code = None;
-                        self.status_banner = "✅ Signed in to YouTube TV! Bot protection bypassed.".to_string();
+                        self.status_banner =
+                            "[Signed In] Connected to YouTube TV. Bot protection bypassed."
+                                .to_string();
                         Task::perform(
                             async move { client.set_auth_token(Some(access_tok)).await },
                             |_| Message::PlayerTick,
@@ -682,10 +758,9 @@ impl WinTubeApp {
                 self.device_auth_code = None;
                 let client = self.innertube.clone();
                 self.status_banner = "Signed out of YouTube account.".to_string();
-                Task::perform(
-                    async move { client.set_auth_token(None).await },
-                    |_| Message::PlayerTick,
-                )
+                Task::perform(async move { client.set_auth_token(None).await }, |_| {
+                    Message::PlayerTick
+                })
             }
 
             Message::SessionRestored(token_opt) => {
@@ -694,7 +769,8 @@ impl WinTubeApp {
                     let client = self.innertube.clone();
                     let tok = token.access_token;
                     self.is_signed_in = true;
-                    self.status_banner = "YouTube TV session restored from saved credentials.".to_string();
+                    self.status_banner =
+                        "YouTube TV session restored from saved credentials.".to_string();
                     Task::perform(
                         async move { client.set_auth_token(Some(tok)).await },
                         |_| Message::PlayerTick,
@@ -705,10 +781,30 @@ impl WinTubeApp {
             }
 
             Message::PlayerTick => {
+                let is_tv = self.form_factor == UiFormFactor::TvCouch;
+
+                // Keep the embedded in-app video surface aligned & visible
+                self.player.sync_embedded_layout(is_tv);
+                let surface_visible =
+                    self.active_tab == ActiveNavTab::NowPlaying && self.active_video.is_some();
+                self.player.set_embedded_visible(surface_visible);
+
                 let (state, progress) = self.player.tick(0.25);
                 self.playback_state = state;
                 self.position_secs = progress.position_secs;
                 self.duration_secs = progress.duration_secs;
+
+                if std::env::var("WINTUBE_DEBUG_PLAYBACK").is_ok() {
+                    tracing::info!(
+                        "[playback-debug] state={:?} pos={:.2} dur={:.2} child_alive={} ipc_live={} pipe={:?}",
+                        state,
+                        self.position_secs,
+                        self.duration_secs,
+                        self.player.is_child_alive(),
+                        self.player.is_embedded_ipc_live(),
+                        self.player.ipc_pipe_name(),
+                    );
+                }
 
                 if state == PlaybackState::Playing {
                     if let Some(ref bundle) = self.active_video {
@@ -725,7 +821,7 @@ impl WinTubeApp {
                                     self.player.seek_to(seg.end_time);
                                     self.position_secs = seg.end_time;
                                     let msg = format!(
-                                        "⚡ SponsorBlock Auto-Skipped [{}] ({:.1}s → {:.1}s)",
+                                        "[SponsorBlock] Auto-Skipped [{}] ({:.1}s -> {:.1}s)",
                                         seg.category.as_str().to_uppercase(),
                                         seg.start_time,
                                         seg.end_time
@@ -776,19 +872,24 @@ impl WinTubeApp {
             |s| &s.codecs,
             self.max_resolution,
             self.codec_preference,
-        );
+        )
+        .cloned();
 
         let best_audio = bundle
             .playback
             .audio_streams
             .iter()
-            .max_by_key(|a| a.bitrate);
+            .max_by_key(|a| a.bitrate)
+            .cloned();
 
+        let playback_client = bundle.playback.client;
         let video_url = best_video
-            .map(|v| v.url.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let audio_url = best_audio.map(|a| a.url.clone());
+            .as_ref()
+            .map(|stream| self.media_relay_url(&meta.video_id, playback_client, stream))
+            .unwrap_or_default();
+        let audio_url = best_audio
+            .as_ref()
+            .map(|stream| self.media_relay_url(&meta.video_id, playback_client, stream));
 
         let title = if self.dearrow_enabled {
             bundle
@@ -832,8 +933,99 @@ impl WinTubeApp {
         );
         self.active_video = Some(bundle);
         self.active_tab = ActiveNavTab::NowPlaying;
-        // Automatically launch hardware-accelerated video viewport!
-        self.update(Message::LaunchExternalHardwareViewport)
+        // Automatically attach the in-app embedded video viewport!
+        self.update(Message::LaunchEmbeddedViewport)
+    }
+
+    /// Routes a resolved media stream through the loopback relay.
+    ///
+    /// The relay forwards mpv's range requests upstream (following CDN
+    /// redirects), falls back to bounded 8 MiB slices for clients whose
+    /// open-ended requests are refused, and refreshes the stream URL through
+    /// innertube if the CDN starts answering `403`. Falls back to the direct
+    /// URL when the relay could not be started.
+    fn media_relay_url(
+        &self,
+        video_id: &str,
+        client: AppClient,
+        stream: &ResolvedStream,
+    ) -> String {
+        let Some(relay) = self.relay.as_ref() else {
+            return stream.url.clone();
+        };
+
+        let mut upstream = UpstreamInfo::new(
+            stream.url.clone(),
+            stream.mime_type.clone(),
+            client.user_agent(),
+        );
+        if let Some(referer) = client.referer() {
+            upstream.referer = Some(referer.to_string());
+        }
+
+        // Refresh the direct URL through innertube when the CDN rejects it.
+        let innertube = self.innertube.clone();
+        let video_id = video_id.to_string();
+        let resolver_video_id = video_id.clone();
+        let itag = stream.itag;
+        let resolver: crate::relay::Resolver = std::sync::Arc::new(move || {
+            let innertube = innertube.clone();
+            let video_id = resolver_video_id.clone();
+            Box::pin(async move {
+                let playback = innertube
+                    .get_video_playback_info_with_client(&video_id, client)
+                    .await
+                    .ok()?;
+                let stream = playback
+                    .video_streams
+                    .iter()
+                    .chain(playback.audio_streams.iter())
+                    .find(|s| s.itag == itag)?;
+                let mut fresh = UpstreamInfo::new(
+                    stream.url.clone(),
+                    stream.mime_type.clone(),
+                    client.user_agent(),
+                );
+                if let Some(referer) = client.referer() {
+                    fresh.referer = Some(referer.to_string());
+                }
+                Some(fresh)
+            })
+        });
+
+        let local = relay.register(upstream, Some(resolver));
+        tracing::info!(
+            "[relay] routed itag {} ({}) for {} via {}",
+            stream.itag,
+            if stream.is_audio { "audio" } else { "video" },
+            video_id,
+            local
+        );
+        local
+    }
+
+    /// Attaches mpv inside the WinTube window; falls back to the external
+    /// popout viewport when native embedding is unavailable.
+    fn launch_embedded_or_popout(&mut self) -> Task<Message> {
+        let is_tv = self.form_factor == UiFormFactor::TvCouch;
+        match self.player.launch_embedded_viewport(is_tv) {
+            Ok(label) => {
+                self.active_decoder_label = label.clone();
+                self.status_banner = format!("In-app video viewport attached: {}", label);
+                Task::none()
+            }
+            Err(err) => {
+                self.status_banner = format!(
+                    "In-app embedding unavailable ({}). Launching popout viewport...",
+                    err
+                );
+                let player = self.player.clone();
+                Task::perform(
+                    async move { player.launch_hardware_viewport().map_err(|e| e.to_string()) },
+                    Message::ExternalViewportResult,
+                )
+            }
+        }
     }
 
     fn handle_key_press(&mut self, key: Key) -> Task<Message> {
@@ -842,7 +1034,9 @@ impl WinTubeApp {
             Key::Named(Named::F11) => return self.update(Message::ToggleFormFactor),
 
             // Player shortcuts when in NowPlaying
-            Key::Character("k") | Key::Character(" ") if self.active_tab == ActiveNavTab::NowPlaying => {
+            Key::Character("k") | Key::Character(" ")
+                if self.active_tab == ActiveNavTab::NowPlaying =>
+            {
                 return self.update(Message::TogglePlayPause);
             }
             Key::Character("j") if self.active_tab == ActiveNavTab::NowPlaying => {
@@ -851,7 +1045,9 @@ impl WinTubeApp {
             Key::Character("l") if self.active_tab == ActiveNavTab::NowPlaying => {
                 return self.update(Message::SeekRelative(10.0));
             }
-            Key::Character("m") | Key::Character("i") if self.active_tab == ActiveNavTab::NowPlaying => {
+            Key::Character("m") | Key::Character("i")
+                if self.active_tab == ActiveNavTab::NowPlaying =>
+            {
                 return self.update(Message::ToggleMiniPlayer);
             }
             Key::Character("[") if self.active_tab == ActiveNavTab::NowPlaying => {
@@ -880,18 +1076,28 @@ impl WinTubeApp {
                 }
             }
             Key::Named(Named::ArrowDown) if self.active_tab != ActiveNavTab::NowPlaying => {
-                let step = if self.form_factor == UiFormFactor::TvCouch { 2 } else { 3 };
+                let step = if self.form_factor == UiFormFactor::TvCouch {
+                    2
+                } else {
+                    3
+                };
                 if !self.feed_videos.is_empty() {
-                    self.focused_card_index = (self.focused_card_index + step).min(self.feed_videos.len() - 1);
+                    self.focused_card_index =
+                        (self.focused_card_index + step).min(self.feed_videos.len() - 1);
                 }
             }
             Key::Named(Named::ArrowUp) if self.active_tab != ActiveNavTab::NowPlaying => {
-                let step = if self.form_factor == UiFormFactor::TvCouch { 2 } else { 3 };
+                let step = if self.form_factor == UiFormFactor::TvCouch {
+                    2
+                } else {
+                    3
+                };
                 self.focused_card_index = self.focused_card_index.saturating_sub(step);
             }
             // Enter key selects focused video in BOTH Desktop and TV mode!
             Key::Named(Named::Enter)
-                if self.active_tab == ActiveNavTab::Home || self.active_tab == ActiveNavTab::Search =>
+                if self.active_tab == ActiveNavTab::Home
+                    || self.active_tab == ActiveNavTab::Search =>
             {
                 if let Some(card) = self.feed_videos.get(self.focused_card_index) {
                     return self.update(Message::SelectVideo(card.video_id.clone()));
@@ -917,7 +1123,9 @@ impl WinTubeApp {
 
         // Authentic YouTube Brand Header
         let yt_badge = container(
-            text("▶").size(if is_tv { 14 } else { 12 }).color(Color::WHITE),
+            text("▶")
+                .size(if is_tv { 14 } else { 12 })
+                .color(Color::WHITE),
         )
         .padding([3, 7])
         .style(|_| container::Style {
@@ -959,7 +1167,6 @@ impl WinTubeApp {
             );
         }
 
-
         // YouTube Search Bar (Pill Input + Search Button)
         let search_box = text_input("Search", &self.search_query)
             .on_input(Message::SearchQueryChanged)
@@ -969,22 +1176,22 @@ impl WinTubeApp {
             .width(Length::Fixed(if is_tv { 520.0 } else { 420.0 }))
             .style(yt_search_input);
 
-        let search_btn = button(
-            text("🔍").size(if is_tv { 16 } else { 14 }),
-        )
-        .on_press(Message::SubmitSearch)
-        .padding(if is_tv { [10, 18] } else { [8, 16] })
-        .style(yt_search_button);
+        let search_btn = button(text("Search").size(if is_tv { 16 } else { 14 }))
+            .on_press(Message::SubmitSearch)
+            .padding(if is_tv { [10, 18] } else { [8, 16] })
+            .style(yt_search_button);
 
-        let search_bar = row![search_box, search_btn].spacing(6).align_y(Alignment::Center);
+        let search_bar = row![search_box, search_btn]
+            .spacing(6)
+            .align_y(Alignment::Center);
 
         // TV / Desktop Mode Switch Pill
         let mode_switch_btn = button(
             text(match self.form_factor {
-                UiFormFactor::Desktop => "📺 TV Mode (F11)",
-                UiFormFactor::TvCouch => "🖥 Desktop Mode (F11)",
+                UiFormFactor::Desktop => "TV Mode (F11)",
+                UiFormFactor::TvCouch => "Desktop Mode (F11)",
             })
-            .size(if is_tv { 14 } else { 12 })
+            .size(if is_tv { 14 } else { 12 }),
         )
         .on_press(Message::ToggleFormFactor)
         .padding(if is_tv { [8, 14] } else { [6, 12] })
@@ -1000,6 +1207,8 @@ impl WinTubeApp {
             ]
             .align_y(Alignment::Center),
         )
+        .height(Length::Fixed(TOPBAR_H))
+        .align_y(Alignment::Center)
         .style(|_| container::Style {
             background: Some(yt_colors::BG_APP.into()),
             border: iced::Border {
@@ -1011,26 +1220,30 @@ impl WinTubeApp {
         })
         .padding([10, 16]);
 
-        // Autocomplete Suggestions Bar
-        let suggestions_bar: Element<'_, Message> = if !self.search_suggestions.is_empty() {
-            let mut sug_row = Row::new().spacing(8).align_y(Alignment::Center);
-            sug_row = sug_row.push(
-                text("Suggestions:")
-                    .size(12)
-                    .color(yt_colors::TEXT_SECONDARY),
-            );
-            for sug in &self.search_suggestions {
+        // Autocomplete Suggestions Bar (Home/Search only — keeps the Now Playing
+        // video-band geometry deterministic for the embedded video surface)
+        let suggestions_bar: Element<'_, Message> =
+            if matches!(self.active_tab, ActiveNavTab::Home | ActiveNavTab::Search)
+                && !self.search_suggestions.is_empty()
+            {
+                let mut sug_row = Row::new().spacing(8).align_y(Alignment::Center);
                 sug_row = sug_row.push(
-                    button(text(sug).size(12))
-                        .on_press(Message::SelectSuggestion(sug.clone()))
-                        .padding([4, 10])
-                        .style(yt_pill_button),
+                    text("Suggestions:")
+                        .size(12)
+                        .color(yt_colors::TEXT_SECONDARY),
                 );
-            }
-            container(sug_row).padding([4, 16]).into()
-        } else {
-            column![].into()
-        };
+                for sug in &self.search_suggestions {
+                    sug_row = sug_row.push(
+                        button(text(sug).size(12))
+                            .on_press(Message::SelectSuggestion(sug.clone()))
+                            .padding([4, 10])
+                            .style(yt_pill_button),
+                    );
+                }
+                container(sug_row).padding([4, 16]).into()
+            } else {
+                column![].into()
+            };
 
         // Left Sidebar Navigation (SmartTube Categories)
         let nav_sidebar = self.view_sidebar(is_tv);
@@ -1063,7 +1276,11 @@ impl WinTubeApp {
                     "Engine: {} | Max: {:?} | SponsorBlock: {}",
                     self.active_decoder_label,
                     self.max_resolution,
-                    if self.sponsorblock_enabled { "ON" } else { "OFF" }
+                    if self.sponsorblock_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 ))
                 .size(12)
                 .color(Color::from_rgb(0.2, 0.85, 0.5)),
@@ -1071,6 +1288,8 @@ impl WinTubeApp {
             .align_y(Alignment::Center),
         )
         .padding([6, 16])
+        .height(Length::Fixed(FOOTER_H))
+        .align_y(Alignment::Center)
         .style(|_| container::Style {
             background: Some(yt_colors::BG_APP.into()),
             border: iced::Border {
@@ -1096,22 +1315,23 @@ impl WinTubeApp {
     fn view_sidebar(&self, is_tv: bool) -> Element<'_, Message> {
         let btn_size = if is_tv { 16 } else { 14 };
         let pad = if is_tv { [12, 16] } else { [10, 14] };
-        let sidebar_width = if is_tv { 230 } else { 190 };
+        // Must match wintube_player::embedded layout constants (video band alignment)
+        let sidebar_width = if is_tv {
+            SIDEBAR_W_TV
+        } else {
+            SIDEBAR_W_DESKTOP
+        };
 
         let nav_btn = |label: &'static str, tab: ActiveNavTab| {
             let active = self.active_tab == tab;
-            button(
-                text(label)
-                    .size(btn_size)
-                    .font(if active {
-                        iced::font::Font {
-                            weight: iced::font::Weight::Bold,
-                            ..Default::default()
-                        }
-                    } else {
-                        iced::font::Font::DEFAULT
-                    }),
-            )
+            button(text(label).size(btn_size).font(if active {
+                iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                }
+            } else {
+                iced::font::Font::DEFAULT
+            }))
             .on_press(Message::SwitchTab(tab))
             .padding(pad)
             .style(yt_nav_button(active))
@@ -1120,12 +1340,12 @@ impl WinTubeApp {
 
         container(
             column![
-                nav_btn("🏠 Home", ActiveNavTab::Home),
-                nav_btn("🔥 Trending", ActiveNavTab::Search),
-                nav_btn("📺 Subscriptions", ActiveNavTab::Subscriptions),
-                nav_btn("⏱ History", ActiveNavTab::History),
+                nav_btn("Home", ActiveNavTab::Home),
+                nav_btn("Trending", ActiveNavTab::Search),
+                nav_btn("Subscriptions", ActiveNavTab::Subscriptions),
+                nav_btn("History", ActiveNavTab::History),
                 nav_btn("▶ Now Playing", ActiveNavTab::NowPlaying),
-                nav_btn("⚙ Settings", ActiveNavTab::Settings),
+                nav_btn("Settings", ActiveNavTab::Settings),
             ]
             .spacing(6),
         )
@@ -1142,7 +1362,9 @@ impl WinTubeApp {
         if self.is_loading_feed {
             return container(
                 column![
-                    text("⚡ Fetching Innertube Streams...").size(if is_tv { 24 } else { 18 }).color(yt_colors::TEXT_PRIMARY),
+                    text("Fetching Innertube Streams...")
+                        .size(if is_tv { 24 } else { 18 })
+                        .color(yt_colors::TEXT_PRIMARY),
                     text("Zero Ads • SponsorBlock Ready • ReturnYouTubeDislike Active")
                         .size(14)
                         .color(yt_colors::TEXT_SECONDARY),
@@ -1159,7 +1381,9 @@ impl WinTubeApp {
 
         if self.feed_videos.is_empty() {
             return container(
-                text("No videos found. Try searching above!").size(18).color(yt_colors::TEXT_SECONDARY),
+                text("No videos found. Try searching above!")
+                    .size(18)
+                    .color(yt_colors::TEXT_SECONDARY),
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1179,34 +1403,39 @@ impl WinTubeApp {
                 let is_focused = card_idx == self.focused_card_index;
 
                 let thumb_h = if is_tv { 200.0 } else { 160.0 };
-                let thumbnail_view: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&video.video_id) {
-                    image(handle.clone())
-                        .width(Length::Fill)
-                        .height(Length::Fixed(thumb_h))
-                        .content_fit(iced::ContentFit::Cover)
-                        .into()
-                } else {
-                    container(
-                        column![
-                            text("▶").size(32).color(yt_colors::TEXT_SECONDARY),
-                            text(if video.is_live { "🔴 LIVE" } else { &video.length_text })
+                let thumbnail_view: Element<'_, Message> =
+                    if let Some(handle) = self.thumbnail_cache.get(&video.video_id) {
+                        image(handle.clone())
+                            .width(Length::Fill)
+                            .height(Length::Fixed(thumb_h))
+                            .content_fit(iced::ContentFit::Cover)
+                            .into()
+                    } else {
+                        container(
+                            column![
+                                text("▶").size(32).color(yt_colors::TEXT_SECONDARY),
+                                text(if video.is_live {
+                                    "LIVE"
+                                } else {
+                                    &video.length_text
+                                })
                                 .size(12)
                                 .color(yt_colors::TEXT_SECONDARY),
-                        ]
-                        .spacing(6)
-                        .align_x(Alignment::Center),
-                    )
-                    .width(Length::Fill)
-                    .height(Length::Fixed(thumb_h))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fixed(thumb_h))
-                    .style(|_| container::Style {
-                        background: Some(yt_colors::BG_INPUT.into()),
-                        border: iced::border::rounded(10),
-                        ..Default::default()
-                    })
-                    .into()
-                };
+                            ]
+                            .spacing(6)
+                            .align_x(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fixed(thumb_h))
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fixed(thumb_h))
+                        .style(|_| container::Style {
+                            background: Some(yt_colors::BG_INPUT.into()),
+                            border: iced::border::rounded(10),
+                            ..Default::default()
+                        })
+                        .into()
+                    };
 
                 let duration_badge = if video.is_live {
                     container(
@@ -1231,7 +1460,7 @@ impl WinTubeApp {
                     row![
                         if video.is_live {
                             container(
-                                text("🔴 LIVE")
+                                text("LIVE")
                                     .size(10)
                                     .font(iced::font::Font {
                                         weight: iced::font::Weight::Bold,
@@ -1259,9 +1488,12 @@ impl WinTubeApp {
                         text(&video.channel_name)
                             .size(if is_tv { 14 } else { 12 })
                             .color(yt_colors::TEXT_SECONDARY),
-                        text(format!("{} • {}", &video.view_count_text, &video.published_time_text))
-                            .size(if is_tv { 13 } else { 12 })
-                            .color(yt_colors::TEXT_SECONDARY),
+                        text(format!(
+                            "{} • {}",
+                            &video.view_count_text, &video.published_time_text
+                        ))
+                        .size(if is_tv { 13 } else { 12 })
+                        .color(yt_colors::TEXT_SECONDARY),
                     ]
                     .spacing(4)
                     .padding([2, 2]),
@@ -1291,12 +1523,11 @@ impl WinTubeApp {
             .into()
     }
 
-
     fn view_now_playing(&self, is_tv: bool) -> Element<'_, Message> {
         let Some(ref bundle) = self.active_video else {
             return container(
                 column![
-                    text("⏳ Resolving 4K/8K DASH Streams & SponsorBlock...")
+                    text("Resolving 4K/8K DASH Streams & SponsorBlock...")
                         .size(22)
                         .color(Color::from_rgb(0.3, 0.95, 0.6)),
                     text(&self.status_banner)
@@ -1307,7 +1538,7 @@ impl WinTubeApp {
                         .color(Color::from_rgb(0.5, 0.6, 0.7)),
                     horizontal_rule(1),
                     row![
-                        button(text("← Back to Browse Feed").size(14))
+                        button(text("Back to Browse Feed").size(14))
                             .on_press(Message::SwitchTab(ActiveNavTab::Home))
                             .padding([8, 16]),
                         button(text("Force Launch Viewport").size(14))
@@ -1375,17 +1606,25 @@ impl WinTubeApp {
                         a.codecs,
                         a.audio_sample_rate.as_deref().unwrap_or("48000"),
                         (a.bitrate as f64) / 1000.0,
-                        if self.audio_normalization { "ON (ebur128)" } else { "OFF" }
+                        if self.audio_normalization {
+                            "ON (ebur128)"
+                        } else {
+                            "OFF"
+                        }
                     )
                 })
                 .unwrap_or_else(|| "Audio: Opus".to_string());
 
             container(
                 column![
-                    text("📊 SmartTube Stats for Nerds")
+                    text("SmartTube Stats for Nerds")
                         .size(13)
                         .color(Color::from_rgb(0.3, 0.95, 0.6)),
-                    text(format!("Video ID: {} | Pipeline: {}", meta.video_id, self.active_decoder_label)).size(12),
+                    text(format!(
+                        "Video ID: {} | Pipeline: {}",
+                        meta.video_id, self.active_decoder_label
+                    ))
+                    .size(12),
                     text(v_info).size(12),
                     text(a_info).size(12),
                     text(format!(
@@ -1403,62 +1642,80 @@ impl WinTubeApp {
             column![].into()
         };
 
-        let viewport_surface = container(
+        // Fixed-height video band: the embedded mpv viewport (child HWND) renders
+        // exactly over this region via --wid. Must stay OUTSIDE the scrollable so
+        // scrolling never desynchronizes the native surface.
+        // Height matches wintube_player::embedded::VIDEO_BAND_H.
+        let video_band = container(column![])
+            .width(Length::Fill)
+            .height(Length::Fixed(VIDEO_BAND_H))
+            .style(|_| container::Style {
+                background: Some(Color::BLACK.into()),
+                ..Default::default()
+            });
+
+        // Playback status + viewport controls row
+        let status_row = row![
+            text(match self.playback_state {
+                PlaybackState::Playing => "PLAYING (In-App Hardware D3D11VA Pipeline)",
+                PlaybackState::Paused => "PAUSED",
+                PlaybackState::Ended => "ENDED",
+                _ => "READY",
+            })
+            .size(if is_tv { 18 } else { 15 })
+            .font(iced::font::Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+            .color(Color::from_rgb(0.2, 0.95, 0.5)),
+            horizontal_space(),
+            button(text("Reattach In-App Viewport").size(12))
+                .on_press(Message::LaunchEmbeddedViewport)
+                .padding([6, 12])
+                .style(yt_pill_button),
+            button(text("Popout Window (mpv / D3D11)").size(12))
+                .on_press(Message::LaunchExternalHardwareViewport)
+                .padding([6, 12])
+                .style(yt_pill_button),
+            button(
+                text(if self.show_stats_for_nerds {
+                    "Hide Stats"
+                } else {
+                    "Stats for Nerds"
+                })
+                .size(12)
+            )
+            .on_press(Message::ToggleStatsForNerds)
+            .padding([6, 10])
+            .style(yt_pill_button),
+            button(
+                text(if self.mini_player_active {
+                    "Expanded View"
+                } else {
+                    "Compact View"
+                })
+                .size(12)
+            )
+            .on_press(Message::ToggleMiniPlayer)
+            .padding([6, 10])
+            .style(yt_pill_button),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        // Seekbar & Transport Controls
+        let transport_bar = container(
             column![
-                row![
-                    text(match self.playback_state {
-                        PlaybackState::Playing => "🟢 PLAYING (Hardware D3D11VA Pipeline)",
-                        PlaybackState::Paused => "⏸ PAUSED",
-                        PlaybackState::Ended => "⏹ ENDED",
-                        _ => "⏳ READY",
-                    })
-                    .size(if is_tv { 18 } else { 15 })
-                    .font(iced::font::Font {
-                        weight: iced::font::Weight::Bold,
-                        ..Default::default()
-                    })
-                    .color(Color::from_rgb(0.2, 0.95, 0.5)),
-                    horizontal_space(),
-                    button(text("🗔 Popout Hardware Window (mpv / D3D11)").size(12))
-                        .on_press(Message::LaunchExternalHardwareViewport)
-                        .padding([6, 12])
-                        .style(yt_pill_button),
-                    button(text(if self.show_stats_for_nerds { "Hide Stats" } else { "Stats for Nerds" }).size(12))
-                        .on_press(Message::ToggleStatsForNerds)
-                        .padding([6, 10])
-                        .style(yt_pill_button),
-                    button(text(if self.mini_player_active { "Expanded View" } else { "Compact View" }).size(12))
-                        .on_press(Message::ToggleMiniPlayer)
-                        .padding([6, 10])
-                        .style(yt_pill_button),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+                status_row,
                 horizontal_rule(1),
                 stats_overlay,
                 if let Some(ref toast) = self.skip_toast {
-                    text(toast)
-                        .size(13)
-                        .color(Color::from_rgb(0.2, 1.0, 0.5))
+                    text(toast).size(13).color(Color::from_rgb(0.2, 1.0, 0.5))
                 } else {
                     text("Zero Ads • SponsorBlock Active • Hardware D3D11VA Decode")
                         .size(12)
                         .color(yt_colors::TEXT_SECONDARY)
                 },
-            ]
-            .spacing(10),
-        )
-        .padding(16)
-        .style(|_| container::Style {
-            background: Some(Color::BLACK.into()),
-            border: iced::border::rounded(12),
-            ..Default::default()
-        })
-        .width(Length::Fill);
-
-        // Seekbar & Transport Controls
-        let transport_bar = container(
-            column![
                 row![
                     text(format_seconds(self.position_secs as u64))
                         .size(13)
@@ -1479,20 +1736,20 @@ impl WinTubeApp {
                 row![
                     button(
                         text(if self.playback_state == PlaybackState::Playing {
-                            "⏸ Pause (K)"
+                            "Pause (K)"
                         } else {
-                            "▶ Play (K)"
+                            "Play (K)"
                         })
                         .size(13)
                     )
                     .on_press(Message::TogglePlayPause)
                     .padding([6, 14])
                     .style(yt_pill_button),
-                    button(text("⏪ -10s (J)").size(12))
+                    button(text("<< -10s (J)").size(12))
                         .on_press(Message::SeekRelative(-10.0))
                         .padding([6, 10])
                         .style(yt_pill_button),
-                    button(text("+10s ⏩ (L)").size(12))
+                    button(text("+10s >> (L)").size(12))
                         .on_press(Message::SeekRelative(10.0))
                         .padding([6, 10])
                         .style(yt_pill_button),
@@ -1531,12 +1788,12 @@ impl WinTubeApp {
         // ReturnYouTubeDislike + Channel Subscription Header
         let ryd_text = if let Some(ref votes) = bundle.ryd {
             format!(
-                "👍 {}   |   👎 {}   (RYD)",
+                "Likes: {}   |   Dislikes: {}   (RYD)",
                 format_number(votes.likes),
                 format_number(votes.dislikes),
             )
         } else {
-            "👍 Likes  |  👎 Dislikes".to_string()
+            "Likes   |   Dislikes".to_string()
         };
 
         let metadata_panel = container(
@@ -1558,7 +1815,7 @@ impl WinTubeApp {
                         .color(yt_colors::TEXT_PRIMARY),
                     button(
                         text(if is_subscribed {
-                            "✓ Subscribed"
+                            "Subscribed"
                         } else {
                             "Subscribe"
                         })
@@ -1575,13 +1832,9 @@ impl WinTubeApp {
                     .padding(if is_subscribed { [7, 14] } else { [7, 18] })
                     .style(yt_subscribe_button(is_subscribed)),
                     horizontal_space(),
-                    container(
-                        text(ryd_text)
-                            .size(13)
-                            .color(yt_colors::TEXT_PRIMARY)
-                    )
-                    .padding([6, 14])
-                    .style(yt_description_box),
+                    container(text(ryd_text).size(13).color(yt_colors::TEXT_PRIMARY))
+                        .padding([6, 14])
+                        .style(yt_description_box),
                 ]
                 .spacing(14)
                 .align_y(Alignment::Center),
@@ -1611,12 +1864,12 @@ impl WinTubeApp {
                             ..Default::default()
                         })
                         .color(yt_colors::TEXT_PRIMARY),
-                    text(" • YouTube Video").size(13).color(yt_colors::TEXT_SECONDARY),
+                    text(" • YouTube Video")
+                        .size(13)
+                        .color(yt_colors::TEXT_SECONDARY),
                 ]
                 .spacing(6),
-                text(desc_snippet)
-                    .size(13)
-                    .color(yt_colors::TEXT_PRIMARY),
+                text(desc_snippet).size(13).color(yt_colors::TEXT_PRIMARY),
             ]
             .spacing(6),
         )
@@ -1628,7 +1881,7 @@ impl WinTubeApp {
         let mut sb_col = Column::new().spacing(8);
         sb_col = sb_col.push(
             text(format!(
-                "🛡 SponsorBlock Segments ({})",
+                "SponsorBlock Segments ({})",
                 bundle.sponsor_segments.len()
             ))
             .size(15)
@@ -1649,7 +1902,7 @@ impl WinTubeApp {
                 sb_col = sb_col.push(
                     row![
                         text(format!(
-                            "[{}] {} → {}",
+                            "[{}] {} -> {}",
                             seg.category.as_str().to_uppercase(),
                             format_seconds(seg.start_time as u64),
                             format_seconds(seg.end_time as u64)
@@ -1679,25 +1932,26 @@ impl WinTubeApp {
                 .color(yt_colors::TEXT_PRIMARY),
         );
         for rel in bundle.next.related_videos.iter().take(10) {
-            let rel_thumb: Element<'_, Message> = if let Some(handle) = self.thumbnail_cache.get(&rel.video_id) {
-                image(handle.clone())
-                    .width(Length::Fixed(100.0))
-                    .height(Length::Fixed(56.0))
-                    .content_fit(iced::ContentFit::Cover)
-                    .into()
-            } else {
-                container(text("▶").size(16).color(yt_colors::TEXT_SECONDARY))
-                    .width(Length::Fixed(100.0))
-                    .height(Length::Fixed(56.0))
-                    .center_x(Length::Fixed(100.0))
-                    .center_y(Length::Fixed(56.0))
-                    .style(|_| container::Style {
-                        background: Some(yt_colors::BG_INPUT.into()),
-                        border: iced::border::rounded(6),
-                        ..Default::default()
-                    })
-                    .into()
-            };
+            let rel_thumb: Element<'_, Message> =
+                if let Some(handle) = self.thumbnail_cache.get(&rel.video_id) {
+                    image(handle.clone())
+                        .width(Length::Fixed(100.0))
+                        .height(Length::Fixed(56.0))
+                        .content_fit(iced::ContentFit::Cover)
+                        .into()
+                } else {
+                    container(text("▶").size(16).color(yt_colors::TEXT_SECONDARY))
+                        .width(Length::Fixed(100.0))
+                        .height(Length::Fixed(56.0))
+                        .center_x(Length::Fixed(100.0))
+                        .center_y(Length::Fixed(56.0))
+                        .style(|_| container::Style {
+                            background: Some(yt_colors::BG_INPUT.into()),
+                            border: iced::border::rounded(6),
+                            ..Default::default()
+                        })
+                        .into()
+                };
 
             let rel_item_content = row![
                 rel_thumb,
@@ -1731,32 +1985,38 @@ impl WinTubeApp {
             );
         }
 
-        scrollable(
-            column![
-                viewport_surface,
-                transport_bar,
-                metadata_panel,
-                description_card,
-                horizontal_rule(1),
-                row![
-                    container(sb_col).width(Length::FillPortion(1)).padding(10),
-                    container(related_col).width(Length::FillPortion(1)).padding(10),
+        // Fixed video band on top, everything else scrolls beneath it.
+        column![
+            video_band,
+            scrollable(
+                column![
+                    transport_bar,
+                    metadata_panel,
+                    description_card,
+                    horizontal_rule(1),
+                    row![
+                        container(sb_col).width(Length::FillPortion(1)).padding(10),
+                        container(related_col)
+                            .width(Length::FillPortion(1))
+                            .padding(10),
+                    ]
+                    .spacing(16),
                 ]
-                .spacing(16),
-            ]
-            .spacing(10)
-            .padding([0, 10]),
-        )
+                .spacing(10)
+                .padding([0, 10]),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill),
+        ]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
-
     }
 
     fn view_subscriptions(&self, is_tv: bool) -> Element<'_, Message> {
         let mut col = Column::new().spacing(14).padding(20);
         col = col.push(
-            text("⭐ Local Privacy-Preserving Subscriptions")
+            text("Local Privacy-Preserving Subscriptions")
                 .size(if is_tv { 24 } else { 20 })
                 .font(iced::font::Font {
                     weight: iced::font::Weight::Bold,
@@ -1781,7 +2041,7 @@ impl WinTubeApp {
                 col = col.push(
                     container(
                         row![
-                            text(format!("👤 {}", sub.channel_name))
+                            text(&sub.channel_name)
                                 .size(15)
                                 .font(iced::font::Font {
                                     weight: iced::font::Weight::Bold,
@@ -1819,7 +2079,7 @@ impl WinTubeApp {
     fn view_history(&self, is_tv: bool) -> Element<'_, Message> {
         let mut col = Column::new().spacing(14).padding(20);
         col = col.push(
-            text("🕒 Local Watch History & Resume Points")
+            text("Local Watch History & Resume Points")
                 .size(if is_tv { 24 } else { 20 })
                 .font(iced::font::Font {
                     weight: iced::font::Weight::Bold,
@@ -1829,7 +2089,11 @@ impl WinTubeApp {
         );
 
         if self.watch_history.is_empty() {
-            col = col.push(text("No videos watched yet.").size(14).color(yt_colors::TEXT_SECONDARY));
+            col = col.push(
+                text("No videos watched yet.")
+                    .size(14)
+                    .color(yt_colors::TEXT_SECONDARY),
+            );
         } else {
             for item in &self.watch_history {
                 let pct = if item.duration_seconds > 0 {
@@ -1859,7 +2123,7 @@ impl WinTubeApp {
                                     .color(yt_colors::TEXT_SECONDARY),
                                 ]
                                 .width(Length::Fill),
-                                button(text("▶ Resume").size(12))
+                                button(text("Resume").size(12))
                                     .on_press(Message::SelectVideo(item.video_id.clone()))
                                     .padding([6, 14])
                                     .style(yt_pill_button),
@@ -1885,7 +2149,7 @@ impl WinTubeApp {
         let auth_section: Element<'_, Message> = if self.is_signed_in {
             column![
                 row![
-                    text("✅ Connected to YouTube TV").size(16).color(Color::from_rgb(0.2, 0.95, 0.5)),
+                    text("Connected to YouTube TV").size(16).color(Color::from_rgb(0.2, 0.95, 0.5)),
                     horizontal_space(),
                     button(text("Sign Out").size(12))
                         .on_press(Message::SignOut)
@@ -1902,9 +2166,12 @@ impl WinTubeApp {
             .into()
         } else if let Some(ref code) = self.device_auth_code {
             column![
-                text(format!("1. Visit {} on your mobile phone or PC browser", code.verification_url))
-                    .size(14)
-                    .color(yt_colors::TEXT_PRIMARY),
+                text(format!(
+                    "1. Visit {} on your mobile phone or PC browser",
+                    code.verification_url
+                ))
+                .size(14)
+                .color(yt_colors::TEXT_PRIMARY),
                 row![
                     text("2. Enter TV Activation Code: ")
                         .size(15)
@@ -1921,7 +2188,7 @@ impl WinTubeApp {
                 .align_y(Alignment::Center),
                 row![
                     text(if self.auth_poll_active {
-                        "⏳ Waiting for approval at youtube.com/activate..."
+                        "Waiting for approval at youtube.com/activate..."
                     } else {
                         "Code generated."
                     })
@@ -1943,7 +2210,7 @@ impl WinTubeApp {
                 text("Sign in using Google's official TV device code (SmartTube method). No password or cookies needed.")
                     .size(13)
                     .color(yt_colors::TEXT_SECONDARY),
-                button(text("🔑 Generate YouTube TV OAuth2 Activation Code").size(13))
+                button(text("Generate YouTube TV OAuth2 Activation Code").size(13))
                     .on_press(Message::RequestTvDeviceCode)
                     .padding([8, 16])
                     .style(yt_pill_button),
@@ -1954,44 +2221,44 @@ impl WinTubeApp {
 
         let res_btn = |label: &'static str, res: MaxResolution| {
             let is_sel = self.max_resolution == res;
-            button(
-                text(label)
-                    .size(12)
-                    .font(if is_sel {
-                        iced::font::Font {
-                            weight: iced::font::Weight::Bold,
-                            ..Default::default()
-                        }
-                    } else {
-                        iced::font::Font::DEFAULT
-                    })
-            )
+            button(text(label).size(12).font(if is_sel {
+                iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                }
+            } else {
+                iced::font::Font::DEFAULT
+            }))
             .on_press(Message::SetMaxResolution(res))
             .padding([6, 14])
-            .style(if is_sel { yt_subscribe_button(false) } else { yt_subscribe_button(true) })
+            .style(if is_sel {
+                yt_subscribe_button(false)
+            } else {
+                yt_subscribe_button(true)
+            })
         };
 
         let codec_btn = |label: &'static str, codec: VideoCodecPreference| {
             let is_sel = self.codec_preference == codec;
-            button(
-                text(label)
-                    .size(12)
-                    .font(if is_sel {
-                        iced::font::Font {
-                            weight: iced::font::Weight::Bold,
-                            ..Default::default()
-                        }
-                    } else {
-                        iced::font::Font::DEFAULT
-                    })
-            )
+            button(text(label).size(12).font(if is_sel {
+                iced::font::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                }
+            } else {
+                iced::font::Font::DEFAULT
+            }))
             .on_press(Message::SetCodecPreference(codec))
             .padding([6, 14])
-            .style(if is_sel { yt_subscribe_button(false) } else { yt_subscribe_button(true) })
+            .style(if is_sel {
+                yt_subscribe_button(false)
+            } else {
+                yt_subscribe_button(true)
+            })
         };
 
         let col = column![
-            text("⚙ WinTube Engine & Quality Settings")
+            text("WinTube Engine & Quality Settings")
                 .size(if is_tv { 24 } else { 20 })
                 .font(iced::font::Font {
                     weight: iced::font::Weight::Bold,
@@ -2022,9 +2289,18 @@ impl WinTubeApp {
                 })
                 .color(yt_colors::TEXT_PRIMARY),
             row![
-                codec_btn("AV1 (RTX 30/40, RX 6000+, Arc)", VideoCodecPreference::Av1Preferred),
-                codec_btn("VP9 (Universal 4K60 GPU Decode)", VideoCodecPreference::Vp9Preferred),
-                codec_btn("H.264 / AVC1 (Legacy Battery Saver)", VideoCodecPreference::Avc1Preferred),
+                codec_btn(
+                    "AV1 (RTX 30/40, RX 6000+, Arc)",
+                    VideoCodecPreference::Av1Preferred
+                ),
+                codec_btn(
+                    "VP9 (Universal 4K60 GPU Decode)",
+                    VideoCodecPreference::Vp9Preferred
+                ),
+                codec_btn(
+                    "H.264 / AVC1 (Legacy Battery Saver)",
+                    VideoCodecPreference::Avc1Preferred
+                ),
             ]
             .spacing(10),
             horizontal_rule(1),
@@ -2039,7 +2315,11 @@ impl WinTubeApp {
                 button(
                     text(format!(
                         "SponsorBlock Auto-Skip: {}",
-                        if self.sponsorblock_enabled { "ENABLED" } else { "DISABLED" }
+                        if self.sponsorblock_enabled {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
                     ))
                     .size(12)
                 )
@@ -2049,7 +2329,11 @@ impl WinTubeApp {
                 button(
                     text(format!(
                         "Loudness Normalization (ebur128): {}",
-                        if self.audio_normalization { "ENABLED" } else { "DISABLED" }
+                        if self.audio_normalization {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
                     ))
                     .size(12)
                 )
@@ -2059,7 +2343,7 @@ impl WinTubeApp {
             ]
             .spacing(12),
             horizontal_rule(1),
-            text("YouTube TV Account Sign-In (Device Code Flow — No Play Services)")
+            text("YouTube TV Account Sign-In (Device Code Flow - No Play Services)")
                 .size(15)
                 .font(iced::font::Font {
                     weight: iced::font::Weight::Bold,
@@ -2108,11 +2392,11 @@ impl WinTubeApp {
                 .color(yt_colors::TEXT_SECONDARY),
                 button(
                     text(if self.playback_state == PlaybackState::Playing {
-                        "⏸"
+                        "Pause"
                     } else {
-                        "▶"
+                        "Play"
                     })
-                    .size(13)
+                    .size(12)
                 )
                 .on_press(Message::TogglePlayPause)
                 .padding([4, 10])
@@ -2137,7 +2421,6 @@ impl WinTubeApp {
         })
         .into()
     }
-
 }
 
 fn format_seconds(total_secs: u64) -> String {
@@ -2205,7 +2488,6 @@ fn yt_search_input(_theme: &Theme, _status: text_input::Status) -> text_input::S
         selection: Color::from_rgb(0.2, 0.4, 0.8),
     }
 }
-
 
 fn yt_pill_button(_theme: &Theme, status: button::Status) -> button::Style {
     let bg = match status {
@@ -2276,7 +2558,9 @@ fn yt_nav_button(is_active: bool) -> impl Fn(&Theme, button::Status) -> button::
 fn yt_card_button(is_focused: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let bg = match status {
-            button::Status::Hovered | button::Status::Pressed => Some(yt_colors::BG_CARD_HOVER.into()),
+            button::Status::Hovered | button::Status::Pressed => {
+                Some(yt_colors::BG_CARD_HOVER.into())
+            }
             _ if is_focused => Some(yt_colors::BG_PILL.into()),
             _ => None,
         };
@@ -2343,9 +2627,6 @@ fn yt_description_box(_theme: &Theme) -> container::Style {
     }
 }
 
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2389,6 +2670,7 @@ mod tests {
                 audio_streams: vec![],
                 hls_manifest_url: None,
                 dash_manifest_url: None,
+                client: AppClient::Ios,
             },
             next: VideoNextDetails::default(),
             ryd: None,

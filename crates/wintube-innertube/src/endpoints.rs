@@ -1,12 +1,13 @@
-use std::sync::Arc;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT, REFERER};
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::client::AppClient;
 use crate::cipher::CipherEngine;
+use crate::client::AppClient;
 use crate::models::{
-    PlayerResponse, ResolvedStream, VideoCardItem, VideoMetadata, VideoNextDetails, VideoPlaybackInfo,
+    PlayerResponse, ResolvedStream, VideoCardItem, VideoMetadata, VideoNextDetails,
+    VideoPlaybackInfo,
 };
 
 const INNERTUBE_API_BASE: &str = "https://www.youtube.com/youtubei/v1";
@@ -35,12 +36,20 @@ pub struct InnertubeClient {
     visitor_data: Arc<tokio::sync::RwLock<Option<String>>>,
     po_token: Arc<tokio::sync::RwLock<Option<String>>>,
     auth_token: Arc<tokio::sync::RwLock<Option<String>>>,
+    /// `STS` player signature timestamp parsed from the watch page. Required
+    /// inside `playbackContext` for the VISIONOS client.
+    signature_timestamp: Arc<tokio::sync::RwLock<Option<u32>>>,
 }
 
 impl InnertubeClient {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
             .tcp_nodelay(true)
+            // Persist the cookies served by the watch page: the VISIONOS
+            // `/player` request behaves like a browser session and is much
+            // more reliable when `VISITOR_INFO1_LIVE` / `__Secure-YNID` are
+            // present.
+            .cookie_store(true)
             .build()
             .expect("Failed to initialize reqwest client");
 
@@ -50,6 +59,7 @@ impl InnertubeClient {
             visitor_data: Arc::new(tokio::sync::RwLock::new(None)),
             po_token: Arc::new(tokio::sync::RwLock::new(None)),
             auth_token: Arc::new(tokio::sync::RwLock::new(None)),
+            signature_timestamp: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -80,14 +90,35 @@ impl InnertubeClient {
     async fn build_context_json(&self, client: AppClient) -> Value {
         let visitor_data = self.visitor_data.read().await.clone();
 
+        // The VISIONOS client expects a browser-like client context (no
+        // `visitorData` inline; that goes into the X-Goog-Visitor-Id header).
+        if client == AppClient::VisionOs {
+            return json!({
+                "client": {
+                    "clientName": client.client_name(),
+                    "clientVersion": client.client_version(),
+                    "deviceMake": "Apple",
+                    "deviceModel": "RealityDevice17,1",
+                    "userAgent": client.user_agent(),
+                    "osName": "visionOS",
+                    "osVersion": "26.5.23O471",
+                    "hl": "en",
+                    "timeZone": "UTC",
+                    "utcOffsetMinutes": 0,
+                }
+            });
+        }
+
         let mut client_ctx = json!({
             "clientName": client.client_name(),
             "clientVersion": client.client_version(),
             "hl": "en",
             "gl": "US",
             "utcOffsetMinutes": 0,
-            "visitorData": visitor_data,
         });
+        if let Some(visitor) = visitor_data {
+            client_ctx["visitorData"] = json!(visitor);
+        }
         if client == AppClient::AndroidVr {
             client_ctx["deviceMake"] = json!("Oculus");
             client_ctx["deviceModel"] = json!("Quest 3");
@@ -111,14 +142,81 @@ impl InnertubeClient {
         })
     }
 
-    /// Primary video player endpoint (`/player`).
-    /// Tries `ANDROID_VR` (high success rate, unthrottled) and automatically
-    /// cascades to `TVHTML5` and `WEB` if needed.
-    pub async fn get_video_playback_info(&self, video_id: &str) -> Result<VideoPlaybackInfo, InnertubeError> {
+    /// Ensures the session has a visitor identity and a player signature
+    /// timestamp. Both are read from the watch page once per process:
+    ///
+    /// * `VISITOR_DATA` makes the VISIONOS player request authoritative
+    ///   (without it the API answers `LOGIN_REQUIRED`).
+    /// * `STS` is required inside `playbackContext.contentPlaybackContext`.
+    async fn ensure_session(&self, video_id: &str) {
+        let need_visitor = self.visitor_data.read().await.is_none();
+        let need_sts = self.signature_timestamp.read().await.is_none();
+        if !need_visitor && !need_sts {
+            return;
+        }
+
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        let html = match self
+            .http
+            .get(&url)
+            .header(
+                USER_AGENT,
+                HeaderValue::from_static(AppClient::VisionOs.user_agent()),
+            )
+            .send()
+            .await
+        {
+            Ok(response) => match response.text().await {
+                Ok(text) => text,
+                Err(err) => {
+                    debug!("watch page body failed: {err}");
+                    return;
+                }
+            },
+            Err(err) => {
+                debug!("watch page request failed: {err}");
+                return;
+            }
+        };
+
+        if need_visitor {
+            if let Some(visitor) = extract_json_string(&html, "\"VISITOR_DATA\":") {
+                *self.visitor_data.write().await = Some(visitor);
+            }
+        }
+        if need_sts {
+            if let Some(sts) = extract_json_u32(&html, "\"STS\":") {
+                *self.signature_timestamp.write().await = Some(sts);
+            }
+        }
+    }
+
+    ///
+    /// Tries the VISIONOS client first: its media URLs are not subject to the
+    /// ~32 MiB truncation that anonymous IOS/ANDROID_VR streams hit, and it
+    /// advertises the full 4K/HDR format ladder. Falls back to the iOS and
+    /// Android VR clients for content VISIONOS cannot play (e.g. "made for
+    /// kids" videos).
+    pub async fn get_video_playback_info(
+        &self,
+        video_id: &str,
+    ) -> Result<VideoPlaybackInfo, InnertubeError> {
         let clients_to_try: Vec<AppClient> = if self.is_authenticated().await {
-            vec![AppClient::TvHtml5, AppClient::Ios, AppClient::AndroidVr, AppClient::Web]
+            vec![
+                AppClient::VisionOs,
+                AppClient::TvHtml5,
+                AppClient::Ios,
+                AppClient::AndroidVr,
+                AppClient::Web,
+            ]
         } else {
-            vec![AppClient::Ios, AppClient::AndroidVr, AppClient::TvHtml5, AppClient::Web]
+            vec![
+                AppClient::VisionOs,
+                AppClient::Ios,
+                AppClient::AndroidVr,
+                AppClient::TvHtml5,
+                AppClient::Web,
+            ]
         };
 
         let mut best_err: Option<InnertubeError> = None;
@@ -128,7 +226,10 @@ impl InnertubeClient {
             match self.fetch_player_with_client(video_id, client).await {
                 Ok(info) => return Ok(info),
                 Err(err) => {
-                    warn!("Client {:?} failed for video {}: {:?}", client, video_id, err);
+                    warn!(
+                        "Client {:?} failed for video {}: {:?}",
+                        client, video_id, err
+                    );
                     // Prefer the most informative error (e.g. bot-check) over generic ones.
                     let informative = matches!(&err, InnertubeError::Unplayable(r) if r != "UNKNOWN" && r != "Video unavailable" && !r.contains("reloaded"));
                     if best_err.is_none() || informative {
@@ -141,11 +242,28 @@ impl InnertubeClient {
         Err(best_err.unwrap_or_else(|| InnertubeError::StreamNotFound))
     }
 
+    /// Resolves playback info using one specific innertube client.
+    ///
+    /// This is what the local media relay uses to refresh an expired or
+    /// rejected stream URL without going through the whole cascade again.
+    pub async fn get_video_playback_info_with_client(
+        &self,
+        video_id: &str,
+        client: AppClient,
+    ) -> Result<VideoPlaybackInfo, InnertubeError> {
+        self.fetch_player_with_client(video_id, client).await
+    }
+
     async fn fetch_player_with_client(
         &self,
         video_id: &str,
         client: AppClient,
     ) -> Result<VideoPlaybackInfo, InnertubeError> {
+        // The player request needs a visitor identity (and, for VISIONOS, the
+        // player signature timestamp). Both come from the watch page; they are
+        // cached for the lifetime of the process.
+        self.ensure_session(video_id).await;
+
         let url = format!("{INNERTUBE_API_BASE}/player?prettyPrint=false");
         let context = self.build_context_json(client).await;
 
@@ -155,6 +273,15 @@ impl InnertubeClient {
             "contentCheckOk": true,
             "racyCheckOk": true,
         });
+
+        if let Some(sts) = *self.signature_timestamp.read().await {
+            body["playbackContext"] = json!({
+                "contentPlaybackContext": {
+                    "html5Preference": "HTML5_PREF_WANTS",
+                    "signatureTimestamp": sts,
+                }
+            });
+        }
 
         // Pass poToken if present
         if let Some(ref po) = *self.po_token.read().await {
@@ -166,12 +293,23 @@ impl InnertubeClient {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(client.user_agent()));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            reqwest::header::ORIGIN,
+            HeaderValue::from_static("https://www.youtube.com"),
+        );
+        if let Ok(name) = HeaderValue::from_str(&client.client_id().to_string()) {
+            headers.insert("X-YouTube-Client-Name", name);
+        }
+        if let Ok(version) = HeaderValue::from_str(client.client_version()) {
+            headers.insert("X-YouTube-Client-Version", version);
+        }
+        if let Some(visitor) = self.visitor_data.read().await.clone() {
+            if let Ok(value) = HeaderValue::from_str(&visitor) {
+                headers.insert("X-Goog-Visitor-Id", value);
+            }
+        }
         if let Some(referer) = client.referer() {
             headers.insert(REFERER, HeaderValue::from_static(referer));
-        }
-        if client == AppClient::Ios {
-            headers.insert("X-YouTube-Client-Name", HeaderValue::from_static("5"));
-            headers.insert("X-YouTube-Client-Version", HeaderValue::from_static("20.03.02"));
         }
         if client == AppClient::TvHtml5 {
             if let Some(ref tok) = *self.auth_token.read().await {
@@ -190,16 +328,31 @@ impl InnertubeClient {
             .await?;
 
         let text = response.text().await?;
-        debug!("Player response length for {}: {} bytes", video_id, text.len());
+        debug!(
+            "Player response length for {}: {} bytes",
+            video_id,
+            text.len()
+        );
 
         let player_res: PlayerResponse = match serde_json::from_str(&text) {
             Ok(p) => p,
             Err(e) => {
                 debug!("Direct PlayerResponse struct deserialization failed for {}: {}. Trying resilient Value parser.", video_id, e);
                 let v: Value = serde_json::from_str(&text)?;
-                return self.parse_player_from_value(video_id, &v);
+                return self.parse_player_from_value(video_id, client, &v);
             }
         };
+
+        // Remember the visitor identity handed out with the response.
+        if let Some(visitor) = player_res
+            .response_context
+            .as_ref()
+            .and_then(|ctx| ctx.visitor_data.clone())
+        {
+            if !visitor.is_empty() {
+                *self.visitor_data.write().await = Some(visitor);
+            }
+        }
 
         // Check Playability
         if player_res.playability_status.status != "OK" {
@@ -210,16 +363,26 @@ impl InnertubeClient {
             return Err(InnertubeError::Unplayable(reason));
         }
 
-        let details = player_res.video_details.ok_or(InnertubeError::StreamNotFound)?;
-        let streaming = player_res.streaming_data.ok_or(InnertubeError::StreamNotFound)?;
+        let details = player_res
+            .video_details
+            .ok_or(InnertubeError::StreamNotFound)?;
+        let streaming = player_res
+            .streaming_data
+            .ok_or(InnertubeError::StreamNotFound)?;
 
         let mut video_streams = Vec::new();
         let mut audio_streams = Vec::new();
 
-        for format in streaming.adaptive_formats.iter().chain(streaming.formats.iter()) {
+        for format in streaming
+            .adaptive_formats
+            .iter()
+            .chain(streaming.formats.iter())
+        {
             let resolved_url = if let Some(ref u) = format.url {
                 Some(u.clone())
-            } else if let Some(ref cipher_str) = format.signature_cipher.as_ref().or(format.cipher.as_ref()) {
+            } else if let Some(ref cipher_str) =
+                format.signature_cipher.as_ref().or(format.cipher.as_ref())
+            {
                 self.cipher.decrypt_signature_cipher(cipher_str)
             } else {
                 None
@@ -258,7 +421,12 @@ impl InnertubeClient {
             author: details.author,
             channel_id: details.channel_id,
             duration_seconds: details.length_seconds.parse().unwrap_or(0),
-            view_count: details.view_count.as_deref().unwrap_or("0").parse().unwrap_or(0),
+            view_count: details
+                .view_count
+                .as_deref()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0),
             description: details.short_description.unwrap_or_default(),
             thumbnails: details.thumbnail.map(|t| t.thumbnails).unwrap_or_default(),
             is_live: details.is_live_content.unwrap_or(false),
@@ -270,28 +438,60 @@ impl InnertubeClient {
             audio_streams,
             hls_manifest_url: streaming.hls_manifest_url,
             dash_manifest_url: streaming.dash_manifest_url,
+            client,
         })
     }
 
     /// Resilient JSON Value fallback parser for `/player` responses when YouTube
     /// schema contains unexpected extra or missing fields.
-    fn parse_player_from_value(&self, video_id: &str, v: &Value) -> Result<VideoPlaybackInfo, InnertubeError> {
-        let status = v.pointer("/playabilityStatus/status")
+    fn parse_player_from_value(
+        &self,
+        video_id: &str,
+        client: AppClient,
+        v: &Value,
+    ) -> Result<VideoPlaybackInfo, InnertubeError> {
+        let status = v
+            .pointer("/playabilityStatus/status")
             .and_then(|s| s.as_str())
             .unwrap_or("UNKNOWN");
         if status != "OK" {
-            let reason = v.pointer("/playabilityStatus/reason")
+            let reason = v
+                .pointer("/playabilityStatus/reason")
                 .and_then(|r| r.as_str())
                 .unwrap_or(status);
             return Err(InnertubeError::Unplayable(reason.to_string()));
         }
 
-        let title = v.pointer("/videoDetails/title").and_then(|s| s.as_str()).unwrap_or("YouTube Video").to_string();
-        let author = v.pointer("/videoDetails/author").and_then(|s| s.as_str()).unwrap_or("Creator").to_string();
-        let channel_id = v.pointer("/videoDetails/channelId").and_then(|s| s.as_str()).unwrap_or("").to_string();
-        let duration_seconds = v.pointer("/videoDetails/lengthSeconds").and_then(|s| s.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let view_count = v.pointer("/videoDetails/viewCount").and_then(|s| s.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let short_description = v.pointer("/videoDetails/shortDescription").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let title = v
+            .pointer("/videoDetails/title")
+            .and_then(|s| s.as_str())
+            .unwrap_or("YouTube Video")
+            .to_string();
+        let author = v
+            .pointer("/videoDetails/author")
+            .and_then(|s| s.as_str())
+            .unwrap_or("Creator")
+            .to_string();
+        let channel_id = v
+            .pointer("/videoDetails/channelId")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let duration_seconds = v
+            .pointer("/videoDetails/lengthSeconds")
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let view_count = v
+            .pointer("/videoDetails/viewCount")
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let short_description = v
+            .pointer("/videoDetails/shortDescription")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let metadata = VideoMetadata {
             video_id: video_id.to_string(),
@@ -309,17 +509,31 @@ impl InnertubeClient {
         let mut audio_streams = Vec::new();
 
         let empty_vec = Vec::new();
-        let adaptive = v.pointer("/streamingData/adaptiveFormats").and_then(|a| a.as_array()).unwrap_or(&empty_vec);
-        let progressive = v.pointer("/streamingData/formats").and_then(|a| a.as_array()).unwrap_or(&empty_vec);
+        let adaptive = v
+            .pointer("/streamingData/adaptiveFormats")
+            .and_then(|a| a.as_array())
+            .unwrap_or(&empty_vec);
+        let progressive = v
+            .pointer("/streamingData/formats")
+            .and_then(|a| a.as_array())
+            .unwrap_or(&empty_vec);
 
         for format in adaptive.iter().chain(progressive.iter()) {
             let itag = format.get("itag").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-            let mime_type = format.get("mimeType").and_then(|m| m.as_str()).unwrap_or("").to_string();
+            let mime_type = format
+                .get("mimeType")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
             let bitrate = format.get("bitrate").and_then(|b| b.as_u64()).unwrap_or(0);
 
             let resolved_url = if let Some(u) = format.get("url").and_then(|u| u.as_str()) {
                 Some(u.to_string())
-            } else if let Some(cipher_str) = format.get("signatureCipher").or_else(|| format.get("cipher")).and_then(|c| c.as_str()) {
+            } else if let Some(cipher_str) = format
+                .get("signatureCipher")
+                .or_else(|| format.get("cipher"))
+                .and_then(|c| c.as_str())
+            {
                 self.cipher.decrypt_signature_cipher(cipher_str)
             } else {
                 None
@@ -328,11 +542,23 @@ impl InnertubeClient {
             if let Some(stream_url) = resolved_url {
                 let is_audio = mime_type.starts_with("audio/");
                 let is_video = mime_type.starts_with("video/");
-                let width = format.get("width").and_then(|w| w.as_u64()).map(|w| w as u32);
-                let height = format.get("height").and_then(|h| h.as_u64()).map(|h| h as u32);
+                let width = format
+                    .get("width")
+                    .and_then(|w| w.as_u64())
+                    .map(|w| w as u32);
+                let height = format
+                    .get("height")
+                    .and_then(|h| h.as_u64())
+                    .map(|h| h as u32);
                 let fps = format.get("fps").and_then(|f| f.as_u64()).map(|f| f as u32);
-                let quality_label = format.get("qualityLabel").and_then(|q| q.as_str()).map(|q| q.to_string());
-                let audio_sample_rate = format.get("audioSampleRate").and_then(|a| a.as_str()).map(|a| a.to_string());
+                let quality_label = format
+                    .get("qualityLabel")
+                    .and_then(|q| q.as_str())
+                    .map(|q| q.to_string());
+                let audio_sample_rate = format
+                    .get("audioSampleRate")
+                    .and_then(|a| a.as_str())
+                    .map(|a| a.to_string());
 
                 let stream = ResolvedStream {
                     itag,
@@ -361,8 +587,14 @@ impl InnertubeClient {
             return Err(InnertubeError::StreamNotFound);
         }
 
-        let hls_manifest_url = v.pointer("/streamingData/hlsManifestUrl").and_then(|u| u.as_str()).map(|s| s.to_string());
-        let dash_manifest_url = v.pointer("/streamingData/dashManifestUrl").and_then(|u| u.as_str()).map(|s| s.to_string());
+        let hls_manifest_url = v
+            .pointer("/streamingData/hlsManifestUrl")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+        let dash_manifest_url = v
+            .pointer("/streamingData/dashManifestUrl")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
 
         Ok(VideoPlaybackInfo {
             metadata,
@@ -370,6 +602,7 @@ impl InnertubeClient {
             audio_streams,
             hls_manifest_url,
             dash_manifest_url,
+            client,
         })
     }
 
@@ -384,7 +617,10 @@ impl InnertubeClient {
         });
 
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(AppClient::Web.user_agent()));
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(AppClient::Web.user_agent()),
+        );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let response = self
@@ -410,7 +646,10 @@ impl InnertubeClient {
         });
 
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(AppClient::Web.user_agent()));
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(AppClient::Web.user_agent()),
+        );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let response = self
@@ -484,7 +723,10 @@ impl InnertubeClient {
         });
 
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(AppClient::Web.user_agent()));
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(AppClient::Web.user_agent()),
+        );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let response = self
@@ -515,7 +757,10 @@ fn extract_video_renderers(node: &Value, out: &mut Vec<VideoCardItem>) {
             for key in ["videoRenderer", "compactVideoRenderer", "gridVideoRenderer"] {
                 if let Some(renderer) = map.get(key) {
                     if let Some(card) = parse_video_renderer(renderer) {
-                        if !out.iter().any(|existing| existing.video_id == card.video_id) {
+                        if !out
+                            .iter()
+                            .any(|existing| existing.video_id == card.video_id)
+                        {
                             out.push(card);
                         }
                     }
@@ -541,8 +786,13 @@ fn parse_video_renderer(r: &Value) -> Option<VideoCardItem> {
         return None;
     }
 
-    let channel_node = r.get("ownerText").or_else(|| r.get("longBylineText")).or_else(|| r.get("shortBylineText"));
-    let channel_name = channel_node.map(extract_text).unwrap_or_else(|| "YouTube Creator".to_string());
+    let channel_node = r
+        .get("ownerText")
+        .or_else(|| r.get("longBylineText"))
+        .or_else(|| r.get("shortBylineText"));
+    let channel_name = channel_node
+        .map(extract_text)
+        .unwrap_or_else(|| "YouTube Creator".to_string());
 
     let channel_id = channel_node
         .and_then(|n| n.pointer("/runs/0/navigationEndpoint/browseEndpoint/browseId"))
@@ -573,7 +823,10 @@ fn parse_video_renderer(r: &Value) -> Option<VideoCardItem> {
         .and_then(|u| u.as_str())
         .map(|s| s.to_string());
 
-    let is_live = length_text == "LIVE" || r.get("badges").map(|b| b.to_string().contains("LIVE")).unwrap_or(false);
+    let is_live = length_text == "LIVE"
+        || r.get("badges")
+            .map(|b| b.to_string().contains("LIVE"))
+            .unwrap_or(false);
 
     Some(VideoCardItem {
         video_id,
@@ -610,4 +863,29 @@ fn extract_codecs(mime_type: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Extracts the first JSON string value that follows `key` in `haystack`
+/// (e.g. `"VISITOR_DATA":"..."` from the watch page's `ytcfg`).
+fn extract_json_string(haystack: &str, key: &str) -> Option<String> {
+    let after_key = &haystack[haystack.find(key)? + key.len()..];
+    let after_quote = &after_key[after_key.find('"')? + 1..];
+    let end = after_quote.find('"')?;
+    let value = &after_quote[..end];
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Extracts the first integer JSON value that follows `key` in `haystack`
+/// (e.g. `"STS":20751` from the watch page's `ytcfg`).
+fn extract_json_u32(haystack: &str, key: &str) -> Option<u32> {
+    let after_key = &haystack[haystack.find(key)? + key.len()..];
+    let digits: String = after_key
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
 }
