@@ -56,7 +56,7 @@ wintube/
   - `IOS`: High compatibility H.264/AAC streams.
   - `WEB`: Autocomplete suggestions and general feed queries.
 - In-memory MPEG-DASH manifest builder converts adaptive audio/video stream segments into standard MPD manifests.
-- Cascades VISIONOS → IOS → ANDROID_VR → TVHTML5 → WEB so content VISIONOS cannot play still resolves.
+- Cascades VISIONOS → ANDROID_VR → IOS → TVHTML5 → WEB so content VISIONOS cannot play still resolves.
 
 ### 2. `wintube-services`
 - **SponsorBlock**: Queries Ajay's SponsorBlock API using 4-byte (8 hex character) SHA-256 hash prefix to prevent the server from tracking the user's viewing history. Automatically seeks past sponsored segments.
@@ -72,7 +72,7 @@ wintube/
 
 ### 4. `wintube-app`
 - GPU-accelerated interface built with **Iced v0.13** on DirectX 12 (`wgpu`).
-- **Loopback media relay** (`src/relay.rs`): a tiny HTTP/1.1 server on `127.0.0.1` that adapts googlevideo's range/redirect behaviour to what FFmpeg expects. It forwards open-ended reads as one streaming request (VISIONOS), falls back to bounded ranges for older clients, follows CDN redirects, and re-resolves the stream through innertube when a URL starts answering `403`.
+- **Loopback media relay** (`src/relay.rs`): a tiny HTTP/1.1 server on `127.0.0.1` that adapts googlevideo's range/redirect behaviour to what FFmpeg expects. It forwards open-ended reads as one streaming request (VISIONOS), falls back to bounded slices (8 MiB video / 1 MiB audio) for older clients, follows CDN redirects, and re-resolves the stream through innertube when a URL starts answering `403`.
 - Dual responsive view layout:
   - **Desktop Mode**: Dense 3-column video grid, fine seekbars, mouse hover actions, and keyboard shortcuts.
   - **10-Foot TV Mode**: High-contrast 2-column cards, magnified typography, remote control D-Pad/arrow-key focus handling.

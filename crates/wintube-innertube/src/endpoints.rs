@@ -1,6 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::cipher::CipherEngine;
@@ -194,9 +195,9 @@ impl InnertubeClient {
     ///
     /// Tries the VISIONOS client first: its media URLs are not subject to the
     /// ~32 MiB truncation that anonymous IOS/ANDROID_VR streams hit, and it
-    /// advertises the full 4K/HDR format ladder. Falls back to the iOS and
-    /// Android VR clients for content VISIONOS cannot play (e.g. "made for
-    /// kids" videos).
+    /// advertises the full 4K/HDR format ladder. Falls back to Android VR
+    /// (also 4K-capable) and then iOS for content VISIONOS cannot play
+    /// (e.g. "made for kids" videos or a temporary bot check).
     pub async fn get_video_playback_info(
         &self,
         video_id: &str,
@@ -205,15 +206,15 @@ impl InnertubeClient {
             vec![
                 AppClient::VisionOs,
                 AppClient::TvHtml5,
-                AppClient::Ios,
                 AppClient::AndroidVr,
+                AppClient::Ios,
                 AppClient::Web,
             ]
         } else {
             vec![
                 AppClient::VisionOs,
-                AppClient::Ios,
                 AppClient::AndroidVr,
+                AppClient::Ios,
                 AppClient::TvHtml5,
                 AppClient::Web,
             ]
@@ -255,6 +256,44 @@ impl InnertubeClient {
     }
 
     async fn fetch_player_with_client(
+        &self,
+        video_id: &str,
+        client: AppClient,
+    ) -> Result<VideoPlaybackInfo, InnertubeError> {
+        let mut result = self.fetch_player_once(video_id, client).await;
+
+        // VISIONOS occasionally answers the first request with "Sign in to
+        // confirm you're not a bot" and accepts the next one on the same
+        // visitor session. Retry briefly instead of falling back to a client
+        // whose media URLs are throttled/truncated.
+        if client == AppClient::VisionOs {
+            for attempt in 0..2 {
+                if !Self::is_visionos_bot_check(&result) {
+                    break;
+                }
+                debug!(
+                    "VISIONOS bot check for {}; retrying with the established session ({}/{})",
+                    video_id,
+                    attempt + 1,
+                    2
+                );
+                tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
+                result = self.fetch_player_once(video_id, client).await;
+            }
+        }
+
+        result
+    }
+
+    fn is_visionos_bot_check(result: &Result<VideoPlaybackInfo, InnertubeError>) -> bool {
+        matches!(
+            result,
+            Err(InnertubeError::Unplayable(reason))
+                if reason.contains("not a bot") || reason.contains("Sign in to confirm")
+        )
+    }
+
+    async fn fetch_player_once(
         &self,
         video_id: &str,
         client: AppClient,

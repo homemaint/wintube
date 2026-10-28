@@ -43,10 +43,17 @@ use tracing::{debug, info, warn};
 
 /// Largest bounded range requested upstream on the fallback path.
 ///
-/// VISIONOS URLs serve bounded ranges of any size with `206`; 8 MiB keeps
-/// the number of round trips low for the older clients that need chunking
-/// without holding a large slice in memory.
+/// VISIONOS video URLs serve bounded ranges of any size with `206`; 8 MiB
+/// keeps the number of round trips low for the older clients that need
+/// chunking without holding a large slice in memory.
 const UPSTREAM_CHUNK: u64 = 8 * 1024 * 1024;
+
+/// Smallest bounded range the relay will fall back to.
+///
+/// Some client/stream combinations - notably `IOS` audio - reject ranges
+/// larger than 1 MiB with `403` even though smaller ranges are served
+/// normally, so the fallback shrinks towards this size before giving up.
+const MIN_UPSTREAM_CHUNK: u64 = 1024 * 1024;
 
 /// How often a single upstream range may be re-resolved after a `403`.
 const MAX_RESOLVE_ATTEMPTS: u32 = 3;
@@ -383,7 +390,9 @@ async fn serve_request(
 ///    throughput.
 /// 2. **Bounded fallback** – if the CDN refuses the open range (IOS /
 ///    ANDROID_VR URLs answer `302`/`403`), the remaining bytes are fetched in
-///    2 MiB slices, which the CDN always serves.
+///    8 MiB slices for video. Audio starts at 1 MiB because some clients
+///    reject larger audio ranges, and any remaining `403` halves the slice
+///    size down to 1 MiB before re-resolving the URL.
 async fn stream_range(
     ctx: &Arc<ServerCtx>,
     slot: &Arc<SlotState>,
@@ -402,9 +411,18 @@ async fn stream_range(
     }
 
     let mut position = start;
+    let upstream = slot.upstream.read().await.clone();
+    let is_audio = upstream.mime.starts_with("audio/");
+    let mut chunk_size = if is_audio {
+        MIN_UPSTREAM_CHUNK
+    } else {
+        UPSTREAM_CHUNK
+    };
 
-    // 1) Fast path: one request for the whole remaining span.
-    if hard_end.saturating_sub(position).saturating_add(1) > UPSTREAM_CHUNK {
+    // 1) Fast path: one request for the whole remaining span. Audio skips it:
+    //    even VISIONOS audio is cheap to fetch in 1 MiB slices, while some
+    //    clients reject open-ended audio ranges outright.
+    if !is_audio && hard_end.saturating_sub(position).saturating_add(1) > chunk_size {
         match fetch_range(ctx, slot, position, end, false).await {
             Ok(mut response) => {
                 let skip = if response.status() == StatusCode::OK {
@@ -432,7 +450,7 @@ async fn stream_range(
             }
             Err(FetchError::Forbidden) => {
                 debug!(
-                    "[relay] upstream refused the open range; switching to bounded 2 MiB ranges"
+                    "[relay] upstream refused the open range; switching to bounded {chunk_size}-byte ranges"
                 );
             }
             Err(FetchError::EndOfStream) => return Ok(()),
@@ -440,14 +458,30 @@ async fn stream_range(
         }
     }
 
-    // 2) Bounded fallback: 2 MiB slices.
+    // 2) Bounded fallback.
     let mut slice_failures = 0u32;
     while position <= hard_end {
-        let chunk_end = position.saturating_add(UPSTREAM_CHUNK - 1).min(hard_end);
+        let chunk_end = position.saturating_add(chunk_size - 1).min(hard_end);
 
-        let mut response = match fetch_range(ctx, slot, position, Some(chunk_end), true).await {
+        let mut response = match fetch_range(
+            ctx,
+            slot,
+            position,
+            Some(chunk_end),
+            chunk_size == MIN_UPSTREAM_CHUNK,
+        )
+        .await
+        {
             Ok(response) => response,
             Err(FetchError::Forbidden) => {
+                if chunk_size > MIN_UPSTREAM_CHUNK {
+                    chunk_size = (chunk_size / 2).max(MIN_UPSTREAM_CHUNK);
+                    debug!(
+                        "[relay] upstream refused a {} byte range at byte {position}; retrying with {chunk_size} byte slices",
+                        chunk_size * 2
+                    );
+                    continue;
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "upstream refused the range",
@@ -752,4 +786,146 @@ fn percent_decode(input: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal googlevideo stand-in: serves `total` zero bytes and rejects any
+    /// range larger than `max_range` with `403`, like the real CDN does for
+    /// IOS/Android VR audio.
+    async fn spawn_mock_upstream(
+        total: u64,
+        max_range: u64,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock address");
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) => return,
+                            Ok(n) => {
+                                request.extend_from_slice(&buf[..n]);
+                                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            Err(_) => return,
+                        }
+                    }
+
+                    let text = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                    let mut start = 0u64;
+                    let mut end = total - 1;
+                    for line in text.lines() {
+                        let Some(spec) = line.strip_prefix("range:").map(str::trim) else {
+                            continue;
+                        };
+                        let Some(spec) = spec.strip_prefix("bytes=") else {
+                            continue;
+                        };
+                        let mut parts = spec.split('-');
+                        start = parts
+                            .next()
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        end = parts
+                            .next()
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(total - 1);
+                    }
+
+                    let len = end.saturating_sub(start) + 1;
+                    if len > max_range {
+                        let _ = stream
+                            .write_all(
+                                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
+                        return;
+                    }
+
+                    let head = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {len}\r\nContent-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n"
+                    );
+                    if stream.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let chunk = vec![0u8; 64 * 1024];
+                    let mut remaining = len;
+                    while remaining > 0 {
+                        let take = remaining.min(chunk.len() as u64) as usize;
+                        if stream.write_all(&chunk[..take]).await.is_err() {
+                            return;
+                        }
+                        remaining -= take as u64;
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/media"), handle)
+    }
+
+    async fn fetch_whole_stream(
+        relay: &StreamRelay,
+        base: &str,
+        mime: &str,
+        total: u64,
+    ) -> Vec<u8> {
+        let encoded_mime = mime.replace('/', "%2F");
+        let url = relay.register(
+            UpstreamInfo::new(
+                format!("{base}?clen={total}&mime={encoded_mime}"),
+                mime,
+                "test-agent",
+            ),
+            None,
+        );
+
+        let response = reqwest::Client::new()
+            .get(&url)
+            .header(RANGE, "bytes=0-")
+            .send()
+            .await
+            .expect("relay request");
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        response.bytes().await.expect("relay body").to_vec()
+    }
+
+    #[test]
+    fn audio_is_fetched_in_one_mib_slices() {
+        let total = 6 * 1024 * 1024 + 123;
+        // The relay owns a runtime, so start it before entering the test's
+        // runtime (`Runtime::block_on` cannot nest).
+        let relay = StreamRelay::start().expect("start relay");
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        runtime.block_on(async {
+            let (base, _handle) = spawn_mock_upstream(total, 1024 * 1024).await;
+            let body = fetch_whole_stream(&relay, &base, "audio/webm", total).await;
+            assert_eq!(body.len() as u64, total);
+        });
+    }
+
+    #[test]
+    fn video_shrinks_ranges_until_the_cdn_accepts() {
+        let total = 10 * 1024 * 1024 + 123;
+        let relay = StreamRelay::start().expect("start relay");
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        runtime.block_on(async {
+            let (base, _handle) = spawn_mock_upstream(total, 1024 * 1024).await;
+            let body = fetch_whole_stream(&relay, &base, "video/webm", total).await;
+            assert_eq!(body.len() as u64, total);
+        });
+    }
 }
