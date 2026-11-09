@@ -42,3 +42,6 @@ Thumbs.db
 *.redb
 .env
 .env.local
+
+# Original icon source (app-icon.png is the tracked processed version)
+Glossy WT Cinematic Play Icon.png
