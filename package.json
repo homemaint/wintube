@@ -1,0 +1,48 @@
+{
+  "name": "wintube-frontend",
+  "private": true,
+  "version": "0.1.4",
+  "license": "MIT",
+  "description": "WinTube — ad-free, lightweight YouTube client for Windows with 144p–8K downloads. Open-source Rust + Tauri 2 desktop app.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-opener": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "^6"
+  },
+  "keywords": [
+    "youtube without ads",
+    "ad-free youtube client",
+    "youtube downloader",
+    "windows youtube app",
+    "lightweight youtube player",
+    "download youtube 1080p 4k 8k",
+    "youtube adblock desktop",
+    "open-source youtube client",
+    "rust",
+    "tauri",
+    "tauri2",
+    "desktop-app",
+    "mp4 remux",
+    "offline player",
+    "privacy"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/wintube.git"
+  },
+  "homepage": "https://github.com/OWNER/wintube#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/wintube/issues"
+  },
+  "author": "Pankaj Gupta"
+}

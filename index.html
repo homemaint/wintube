@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Wintube — YouTube without ads</title>
+<style>
+:root{--bg:#0f0f0f;--panel:#1a1a1a;--hover:#272727;--text:#f1f1f1;--muted:#aaa;--accent:#ff0033;--radius:12px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+a{color:inherit;text-decoration:none}button{background:#272727;color:var(--text);border:0;border-radius:999px;padding:8px 14px;cursor:pointer}
+button:hover{background:#3d3d3d}button.primary{background:var(--accent)}
+input{background:#121212;border:1px solid #303030;color:var(--text);border-radius:999px;padding:10px 16px;width:420px;outline:none}
+.topbar{display:flex;align-items:center;gap:16px;padding:10px 16px;position:sticky;top:0;background:var(--bg);z-index:10}
+.logo{font-weight:800;font-size:18px}.logo span{color:var(--accent)}
+.layout{display:flex}.sidebar{width:200px;padding:8px;position:sticky;top:52px;height:calc(100vh - 52px);overflow:auto}
+.sidebar a{display:block;padding:10px 12px;border-radius:10px}.sidebar a:hover,.sidebar a.active{background:var(--hover)}
+.main{flex:1;padding:12px 20px;min-width:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.card{cursor:pointer}.card img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:var(--radius);background:#222}
+.card h3{margin:8px 0 2px;font-size:14px}.muted{color:var(--muted);font-size:12px}
+.watch{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px}
+video{width:100%;background:#000;border-radius:var(--radius);aspect-ratio:16/9}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+select{background:#121212;color:var(--text);border:1px solid #303030;border-radius:8px;padding:6px}
+.progress{height:6px;background:#333;border-radius:999px;overflow:hidden}.progress>i{display:block;height:100%;background:var(--accent);width:0%}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;z-index:20}
+.sheet{background:var(--panel);border-radius:16px;padding:20px;min-width:340px;max-width:520px}
+.card.skel{cursor:default}
+.card.skel .ph{width:100%;aspect-ratio:16/9;border-radius:var(--radius);background:#202020}
+.card.skel .bar{height:10px;margin-top:10px;border-radius:6px;background:#202020}
+.card.skel .bar.short{width:55%;margin-top:7px}
+.card.skel .ph,.card.skel .bar{animation:skel 1.3s ease-in-out infinite}
+@keyframes skel{0%,100%{opacity:.45}50%{opacity:.85}}
+.errbox{border:1px solid #5c2626;background:#1b1111;border-radius:var(--radius);padding:14px;margin:10px 0}
+.errbox strong{color:#ff7b72}.errbox p{color:#e6b3b3;white-space:pre-wrap;word-break:break-word}
+.errbox button{margin-top:8px;margin-right:8px}
+</style></head>
+<body><div id="app"></div><script type="module" src="/src/main.js"></script></body></html>

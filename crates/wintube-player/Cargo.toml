@@ -1,28 +1,8 @@
 [package]
 name = "wintube-player"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-wintube-innertube = { path = "../wintube-innertube" }
-tokio.workspace = true
+wintube-core = { path = "../wintube-core" }
 serde.workspace = true
-serde_json.workspace = true
-tracing.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true
-windows = { version = "0.58", features = [
-    "Win32_Foundation",
-    "Win32_System_Power",
-    "Win32_System_LibraryLoader",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_HiDpi",
-    "Win32_Graphics_Gdi",
-    "Media_Playback",
-    "Media_Control",
-    "Storage_Streams"
-] }
-
-[dev-dependencies]
-wintube-innertube = { path = "../wintube-innertube" }

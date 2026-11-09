@@ -1,0 +1,11 @@
+[package]
+name = "wintube-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wintube-core = { path = "../wintube-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true

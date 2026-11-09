@@ -1,9 +1,44 @@
-target/
+# Rust / Cargo
+/target/
 **/*.rs.bk
+
+# Node / frontend build output
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+# Tauri / Windows build artifacts
+src-tauri/binaries/
+src-tauri/sidecars/
+*.msi
+*.msix
+*.appx
+*.dmg
+*.AppImage
+
+# Bundled sidecars (fetch via docs/INSTALL.md — do not commit binaries)
+src-tauri/sidecars/*.exe
+src-tauri/binaries/*.exe
+
+# Debug / local experiments
+TestMux/
+boxes.py
+fmparse.py
+tree.py
+thumburl.txt
+py.exe
+.msvc_lib/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
 *.pdb
 *.dll
 *.exe
 *.redb
 .env
-.idea/
-.vscode/
+.env.local

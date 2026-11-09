@@ -1,32 +1,29 @@
 [workspace]
 members = [
-    "crates/wintube-innertube",
-    "crates/wintube-services",
+    "crates/wintube-core",
+    "crates/wintube-yt",
+    "crates/wintube-download",
+    "crates/wintube-storage",
     "crates/wintube-player",
-    "crates/wintube-app",
+    "crates/wintube-mux",
+    "src-tauri",
 ]
 resolver = "2"
 
-[workspace.package]
-version = "0.1.0"
-edition = "2021"
-authors = ["WinTube Team"]
-license = "GPL-3.0"
-
 [workspace.dependencies]
-tokio = { version = "1.38", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["native-tls-vendored", "json", "stream", "cookies", "gzip"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "1.0"
-anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-url = "2.5"
-regex = "1.10"
-sha2 = "0.10"
-hex = "0.4"
-redb = "2.4"
-iced = { version = "0.13", features = ["tokio", "image", "advanced"] }
+dirs = "5"
+futures = "0.3"
 
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

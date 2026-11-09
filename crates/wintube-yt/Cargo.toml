@@ -1,0 +1,13 @@
+[package]
+name = "wintube-yt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wintube-core = { path = "../wintube-core" }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

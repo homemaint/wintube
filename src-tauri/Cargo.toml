@@ -1,0 +1,39 @@
+[package]
+name = "wintube"
+version = "0.1.4"
+edition = "2021"
+license = "MIT"
+description = "WinTube — ad-free, lightweight YouTube client for Windows with 144p–8K downloads"
+readme = "../README.md"
+repository = "https://github.com/OWNER/wintube"
+homepage = "https://github.com/OWNER/wintube#readme"
+documentation = "https://github.com/OWNER/wintube"
+authors = ["Pankaj Gupta"]
+keywords = ["youtube", "youtube-downloader", "adblock", "windows", "rust", "tauri", "desktop-app"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+# Release builds must serve the embedded `dist/` assets instead of the Vite
+# dev server. The Tauri CLI enables this automatically; adding it here means a
+# plain `cargo build --release` produces a working app too.
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+wintube-core = { path = "../crates/wintube-core" }
+wintube-yt = { path = "../crates/wintube-yt" }
+wintube-download = { path = "../crates/wintube-download" }
+wintube-mux = { path = "../crates/wintube-mux" }
+wintube-storage = { path = "../crates/wintube-storage" }
+wintube-player = { path = "../crates/wintube-player" }
+uuid.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+reqwest.workspace = true

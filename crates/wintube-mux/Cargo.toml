@@ -1,0 +1,11 @@
+[package]
+name = "wintube-mux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wintube-core = { path = "../wintube-core" }
+mp4 = "0.14"
+muxide = { version = "0.5", default-features = false }
+serde.workspace = true
+thiserror.workspace = true

@@ -1,11 +1,2 @@
-[target.x86_64-pc-windows-msvc]
-rustflags = [
-    "-L", "native=D:\\My Projects\\Wintube\\.msvc_lib",
-    "-L", "native=C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\lib\\x64",
-]
-
-[env]
-PATH = "C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\bin\\HostX64\\x64;C:\\Users\\Pankaj Gupta\\.cargo\\bin"
-LIB = "D:\\My Projects\\Wintube\\.msvc_lib;C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Tools\\MSVC\\14.50.35717\\lib\\x64"
-SQLITE3_LIB_DIR = "D:\\My Projects\\Wintube\\.msvc_lib"
-
+[build]
+target = "x86_64-pc-windows-gnu"
