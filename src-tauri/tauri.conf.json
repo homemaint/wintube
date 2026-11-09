@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "productName": "Wintube",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.wintube.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,9 +29,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "shortDescription": "Ad-free, lightweight YouTube client for Windows with 144p–8K downloads",
-    "longDescription": "WinTube is an open-source, ad-free, lightweight YouTube client for Windows with selectable-quality downloads from 144p to 8K. Built with Rust and Tauri 2. Watch without ads, download MP4 with H.264/AAC remux (no ffmpeg required for most downloads), and play offline.",
-    "category": "Video",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "externalBin": ["binaries/yt-dlp"],
     "windows": { "nsis": { "installMode": "currentUser" } }

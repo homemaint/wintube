@@ -9,6 +9,27 @@ const QUALITIES = [
 const CODECS = [{v:'auto',label:'Codec: Auto'},{v:'av1',label:'AV1'},{v:'vp9',label:'VP9'},{v:'avc',label:'AVC'}];
 
 let route = { name: 'home' };
+// Navigation history so going back from a video returns to the search
+// results (or History/Downloads) it was opened from. Search results come
+// back from searchCache instantly — no re-fetch.
+let navStack = [];
+function navigate(newRoute){
+  navStack.push(route);
+  if(navStack.length > 20) navStack.shift();
+  route = newRoute;
+  render();
+}
+function goBack(){
+  route = navStack.pop() || { name: 'home' };
+  render();
+}
+function backLabel(){
+  const prev = navStack[navStack.length - 1];
+  if(!prev) return 'Back';
+  if(prev.name === 'search') return `Back to “${prev.q}” results`;
+  const names = { home:'Back to Home', history:'Back to History', downloads:'Back to Downloads', settings:'Back to Settings' };
+  return names[prev.name] || 'Back';
+}
 let settings = { download_dir:'', default_quality:'auto', default_codec:'auto', auto_sponsorblock:true, theme:'dark', hw_accel:true, check_updates:true };
 let downloads = [];
 let modal = null;
@@ -35,6 +56,7 @@ const fmtDur = s => s==null?'':`${Math.floor(s/3600)}:${String(Math.floor(s%3600
 function shell(main){
   $('#app').innerHTML = `
   <header class="topbar">
+    <button id="nav-back" title="Back (Alt+Left)" ${navStack.length?'':'hidden'} style="font-size:18px;padding:6px 12px">&larr;</button>
     <div class="logo">Win<span>tube</span></div>
     <input id="q" placeholder="Search — press /"/> <button class="primary" id="go">Search</button>
     <span style="flex:1"></span>
@@ -52,18 +74,22 @@ function shell(main){
     <main class="main" id="content">${main}</main>
   </div>
   ${modal?`<div class="modal"><div class="sheet">${modal}</div></div>`:''}`;
-  document.querySelectorAll('.sidebar a').forEach(a=>a.onclick=e=>{e.preventDefault();route={name:a.dataset.r};render();});
+  document.querySelectorAll('.sidebar a').forEach(a=>a.onclick=e=>{e.preventDefault();navigate({name:a.dataset.r});});
+  const nb = $('#nav-back'); if(nb) nb.onclick = goBack;
   $('#go').onclick=doSearch; $('#q').onkeydown=e=>{if(e.key==='Enter')doSearch();};
-  document.addEventListener('keydown', e=>{ if(e.key==='/' && document.activeElement.tagName!=='INPUT'){e.preventDefault();$('#q')?.focus();} });
-  $('#dl-btn').onclick=()=>{route={name:'downloads'};render();};
-  $('#set-btn').onclick=()=>{route={name:'settings'};render();};
+  document.addEventListener('keydown', e=>{
+    if(e.key==='/' && document.activeElement.tagName!=='INPUT'){e.preventDefault();$('#q')?.focus();}
+    if(e.altKey && e.key==='ArrowLeft'){e.preventDefault();goBack();}
+  });
+  $('#dl-btn').onclick=()=>{navigate({name:'downloads'});};
+  $('#set-btn').onclick=()=>{navigate({name:'settings'});};
   bindCards();
   bindMain();
 }
 
 /// Wire up cards and inline action buttons that are injected after render().
 function bindCards(){
-  document.querySelectorAll('[data-watch]').forEach(el=>el.onclick=()=>{route={name:'watch',id:el.dataset.watch};render();});
+  document.querySelectorAll('[data-watch]').forEach(el=>el.onclick=()=>{navigate({name:'watch',id:el.dataset.watch});});
   const retry = $('#retry');
   if(retry) retry.onclick = async ()=>{
     retry.disabled = true; retry.textContent = 'Retrying…';
@@ -71,10 +97,10 @@ function bindCards(){
     await render();
   };
   const diag = $('#diag');
-  if(diag) diag.onclick = ()=>{ route={name:'settings'}; render(); };
+  if(diag) diag.onclick = ()=>{ navigate({name:'settings'}); };
 }
 
-async function doSearch(){ const q=$('#q').value.trim(); if(!q)return; route={name:'search',q}; await render(); }
+async function doSearch(){ const q=$('#q').value.trim(); if(!q)return; navigate({name:'search',q}); }
 
 const HOME_QUERY = 'trending music';
 let renderToken = 0;
@@ -126,6 +152,7 @@ async function watchHTML(id){
   const dur = fmtDur(vid.duration);
   const subs = (vid.subtitles||[]).slice(0,12).map(s=>`<option value="${esc(s.url)}">${esc(s.label)} (${esc(s.ext)})</option>`).join('');
   return `
+  <div class="row" style="margin-bottom:12px"><button id="back">&larr; ${esc(backLabel())}</button></div>
   <div class="watch">
     <div>
       <video id="v" controls autoplay src="${esc(prog)}"></video>
@@ -240,6 +267,7 @@ async function settingsHTML(){
 }
 
 function bindMain(){
+  if($('#back')) $('#back').onclick = goBack;
   if($('#dl')) $('#dl').onclick = async ()=>{
     const q=$('#q-sel').value, c=$('#c-sel').value;
     try{
@@ -248,7 +276,7 @@ function bindMain(){
     }catch(e){
       modal = `<h3>Download failed</h3><p class="muted">${esc(e?.message||String(e))}</p><button class="primary" id="modal-ok">OK</button>`;
     }
-    route.name='downloads'; render();
+    navigate({name:'downloads'});
   };
   if($('#modal-ok')) $('#modal-ok').onclick = ()=>{ modal = null; render(); };
   if($('#copy')) $('#copy').onclick=()=>{navigator.clipboard?.writeText(`https://www.youtube.com/watch?v=${route.id}`);};
