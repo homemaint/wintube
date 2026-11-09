@@ -18,7 +18,7 @@ Pick MSI unless you need a per-user install without admin rights.
 
 ## Install
 
-1. Download the latest release from https://github.com/OWNER/wintube/releases
+1. Download the latest release from https://github.com/homemaint/wintube/releases
 2. Double-click the `.msi` (or `-setup.exe`) and accept the UAC prompt.
 3. Launch **WinTube** from Start → WinTube, or from `C:\Program Files\Wintube\wintube.exe`.
 

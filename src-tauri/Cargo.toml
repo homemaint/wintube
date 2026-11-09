@@ -5,9 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "WinTube — ad-free, lightweight YouTube client for Windows with 144p–8K downloads"
 readme = "../README.md"
-repository = "https://github.com/OWNER/wintube"
-homepage = "https://github.com/OWNER/wintube#readme"
-documentation = "https://github.com/OWNER/wintube"
+repository = "https://github.com/homemaint/wintube"
+homepage = "https://github.com/homemaint/wintube#readme"
+documentation = "https://github.com/homemaint/wintube"
 authors = ["Pankaj Gupta"]
 keywords = ["youtube", "youtube-downloader", "adblock", "windows", "rust", "tauri", "desktop-app"]
 

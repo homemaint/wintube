@@ -5,12 +5,12 @@
 **Ad-free, lightweight YouTube client for Windows with 144p–8K downloads. Open-source Rust + Tauri 2 desktop app.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Windows](https://img.shields.io/badge/Platform-Windows-0078D4)](https://github.com/OWNER/wintube/releases)
+[![Windows](https://img.shields.io/badge/Platform-Windows-0078D4)](https://github.com/homemaint/wintube/releases)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/Rust-Cargo-orange)](https://www.rust-lang.org)
-[![Release](https://img.shields.io/github/v/OWNER/wintube)](https://github.com/OWNER/wintube/releases)
+[![Release](https://img.shields.io/github/v/homemaint/wintube)](https://github.com/homemaint/wintube/releases)
 
-**[Download latest release](https://github.com/OWNER/wintube/releases/latest)** · [Read docs](docs/) · [Report an issue](https://github.com/OWNER/wintube/issues)
+**[Download latest release](https://github.com/homemaint/wintube/releases/latest)** · [Read docs](docs/) · [Report an issue](https://github.com/homemaint/wintube/issues)
 
 </div>
 
@@ -58,7 +58,7 @@ Download the latest MSI or NSIS installer:
 - **MSI (recommended):** `Wintube_<version>_x64_en-US.msi`
 - **NSIS setup:** `Wintube_<version>_x64-setup.exe`
 
-Both are on the [Releases page](https://github.com/OWNER/wintube/releases).
+Both are on the [Releases page](https://github.com/homemaint/wintube/releases).
 
 The installer places `Wintube.exe` + `yt-dlp.exe` sidecar next to it. WinTube requires the **WebView2 Evergreen Runtime** (already present on most Windows 10/11 machines).
 

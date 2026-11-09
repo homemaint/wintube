@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/OWNER/wintube/tree/main/docs
+    url: https://github.com/homemaint/wintube/tree/main/docs
     about: Install, build, architecture, and troubleshooting docs
   - name: yt-dlp upstream issues
     url: https://github.com/yt-dlp/yt-dlp/issues

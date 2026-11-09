@@ -38,11 +38,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/wintube.git"
+    "url": "https://github.com/homemaint/wintube.git"
   },
-  "homepage": "https://github.com/OWNER/wintube#readme",
+  "homepage": "https://github.com/homemaint/wintube#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/wintube/issues"
+    "url": "https://github.com/homemaint/wintube/issues"
   },
   "author": "Pankaj Gupta"
 }
