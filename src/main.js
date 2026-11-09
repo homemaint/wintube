@@ -33,18 +33,23 @@ function backLabel(){
 let settings = { download_dir:'', default_quality:'auto', default_codec:'auto', auto_sponsorblock:true, theme:'dark', hw_accel:true, check_updates:true };
 let downloads = [];
 let modal = null;
-// Search results are expensive (a yt-dlp subprocess + thumbnail fetches), so
-// cache them per query instead of re-running on every re-render.
+// Search pages are expensive (a yt-dlp subprocess + thumbnail fetches), so
+// cache them per query+continuation instead of re-running on every re-render.
+// Each entry is the accumulated {cards, continuation} for that query string.
 const searchCache = new Map();
-async function searchVideos(q){
-  if(searchCache.has(q)) return searchCache.get(q);
-  const p = api('search_videos',{query:q}).catch(err=>{
+// The currently displayed query's accumulated results + next-page token,
+// so "Load more" appends without re-fetching page 1.
+let searchPage = { q: null, cards: [], continuation: null };
+async function searchVideos(q, continuation){
+  const key = q + '|' + (continuation ?? '');
+  if(searchCache.has(key)) return searchCache.get(key);
+  const p = api('search_videos',{query:q, continuation}).catch(err=>{
     // Never cache a failure — one transient error would poison the session
     // and every later visit would keep showing an empty grid.
-    searchCache.delete(q);
+    searchCache.delete(key);
     throw err;
   });
-  searchCache.set(q,p);
+  searchCache.set(key,p);
   return p;
 }
 
@@ -116,12 +121,12 @@ async function render(){
       // lands — the UI must never look frozen while yt-dlp runs.
       const q = route.name==='home' ? HOME_QUERY : route.q;
       const heading = route.name==='home' ? 'Home' : `Results for “${esc(route.q)}”`;
-      shell(`<h2>${heading}</h2><div class="grid" id="grid">${skeletons()}</div>`);
+      shell(`<h2>${heading}</h2><div class="grid" id="grid">${skeletons()}</div><div id="more"></div>`);
       try{
-        const vids = await searchVideos(q);
+        const page = await searchVideos(q);
         if(token!==renderToken) return;
-        const g = $('#grid');
-        if(g) g.innerHTML = vids.length ? vids.map(card).join('') : '<p class="muted">No results found.</p>';
+        searchPage = { q, cards: page.cards, continuation: page.continuation };
+        paintSearchGrid();
       }catch(e){
         if(token!==renderToken) return;
         const g = $('#grid');
@@ -142,6 +147,37 @@ async function render(){
   }catch(e){ shell(`<p style="color:#f66">Error: ${esc(e.message||e)}</p>`); }
 }
 function card(v){ return `<div class="card" data-watch="${esc(v.id)}"><img src="${esc(v.thumbnail)}" loading="lazy" decoding="async"/><h3>${esc(v.title)}</h3><div class="muted">${esc(v.channel)}${v.duration?(' · '+fmtDur(v.duration)):''}</div></div>`; }
+
+function paintSearchGrid(){
+  const g = $('#grid');
+  if(g) g.innerHTML = searchPage.cards.length
+    ? searchPage.cards.map(card).join('')
+    : '<p class="muted">No results found.</p>';
+  const more = $('#more');
+  if(more){
+    more.innerHTML = searchPage.continuation
+      ? `<div style="text-align:center;margin:20px 0"><button id="loadmore" class="primary">Load more (${searchPage.cards.length} shown)</button></div>`
+      : '';
+    const btn = $('#loadmore');
+    if(btn) btn.onclick = loadMoreResults;
+  }
+  bindCards();
+}
+
+async function loadMoreResults(){
+  const btn = $('#loadmore');
+  if(btn){ btn.disabled = true; btn.textContent = 'Loading…'; }
+  try{
+    const page = await searchVideos(searchPage.q, searchPage.continuation);
+    const seen = new Set(searchPage.cards.map(c=>c.id));
+    const fresh = page.cards.filter(c=>!seen.has(c.id));
+    searchPage.cards = searchPage.cards.concat(fresh);
+    searchPage.continuation = page.continuation;
+    paintSearchGrid();
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = 'Load failed — retry'; btn.onclick = loadMoreResults; }
+  }
+}
 
 let currentInfo=null;
 async function watchHTML(id){

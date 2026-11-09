@@ -21,25 +21,40 @@ pub async fn get_play_info(video_id: String) -> Result<PlayInfo, String> {
     Ok(info)
 }
 
+#[derive(serde::Serialize)]
+pub struct SearchResult {
+    pub cards: Vec<wintube_core::VideoCard>,
+    pub continuation: Option<String>,
+}
+
 #[tauri::command]
-pub async fn search_videos(query: String) -> Result<Vec<wintube_core::VideoCard>, String> {
+pub async fn search_videos(query: String, continuation: Option<String>) -> Result<SearchResult, String> {
     let started = std::time::Instant::now();
     // Fast path: the InnerTube JSON API. No subprocess, no sidecar, ~10x
     // quicker than yt-dlp's flat search.
-    match wintube_yt::innertube::search(&query).await {
-        Ok(mut cards) => {
-            cards.truncate(12);
+    match wintube_yt::innertube::search_page(&query, continuation.as_deref()).await {
+        Ok(mut page) => {
             crate::log_line(&format!(
-                "search query={query:?} source=innertube cards={} elapsed={}ms",
-                cards.len(),
+                "search query={query:?} source=innertube page cards={} more={} elapsed={}ms",
+                page.cards.len(),
+                page.continuation.is_some(),
                 started.elapsed().as_millis()
             ));
-            inline_thumbnails(&mut cards).await;
-            return Ok(cards);
+            inline_thumbnails(&mut page.cards).await;
+            return Ok(SearchResult {
+                cards: page.cards,
+                continuation: page.continuation,
+            });
         }
         Err(e) => crate::log_line(&format!(
             "search query={query:?} source=innertube failed ({e}); falling back to yt-dlp"
         )),
+    }
+
+    if continuation.is_some() {
+        // Continuation tokens are InnerTube-only; the yt-dlp fallback below
+        // always returns the first page, which would corrupt paging.
+        return Err("Search failed (no more pages available)".to_string());
     }
 
     // Fallback: yt-dlp flat search.
@@ -106,10 +121,11 @@ pub async fn search_videos(query: String) -> Result<Vec<wintube_core::VideoCard>
             .and_then(|e| e.as_array())
             .cloned()
             .unwrap_or_default();
+        // The yt-dlp fallback has no paging: return one page of 24.
+        const PAGE_SIZE: usize = 24;
         crate::log_line(&format!("search entries={}", entries.len()));
         let mut cards = Vec::new();
-        // 12 cards: enough for a grid, and it bounds thumbnail fetching.
-        for e in entries.iter().take(12) {
+        for e in entries.iter().take(PAGE_SIZE) {
             let id = e.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
             if id.is_empty() {
                 continue;
@@ -139,7 +155,10 @@ pub async fn search_videos(query: String) -> Result<Vec<wintube_core::VideoCard>
             started.elapsed().as_millis()
         ));
         inline_thumbnails(&mut cards).await;
-        return Ok(cards);
+        return Ok(SearchResult {
+            cards,
+            continuation: None,
+        });
     }
     Err(if last_err.is_empty() {
         "yt-dlp returned no output".to_string()

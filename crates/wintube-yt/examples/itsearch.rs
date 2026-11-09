@@ -8,10 +8,22 @@ async fn main() {
         .nth(1)
         .unwrap_or_else(|| "trending music".to_string());
     let t = std::time::Instant::now();
-    match wintube_yt::innertube::search(&q).await {
-        Ok(cards) => {
-            println!("query={q:?} -> {} cards in {}ms", cards.len(), t.elapsed().as_millis());
-            for c in cards.iter().take(4) {
+    match wintube_yt::innertube::search_page(&q, None).await {
+        Ok(page) => {
+            println!(
+                "query={q:?} -> {} cards in {}ms, more={}",
+                page.cards.len(),
+                t.elapsed().as_millis(),
+                page.continuation.is_some()
+            );
+            // Page 2 via the continuation token.
+            if let Some(token) = &page.continuation {
+                match wintube_yt::innertube::search_page(&q, Some(token)).await {
+                    Ok(p2) => println!("  page 2 -> {} more cards, more={}", p2.cards.len(), p2.continuation.is_some()),
+                    Err(e) => println!("  page 2 FAILED: {e}"),
+                }
+            }
+            for c in page.cards.iter().take(4) {
                 println!(
                     "  {} | {} | {} | dur={:?} | views={:?} | thumb={}",
                     c.id,

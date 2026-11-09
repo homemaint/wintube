@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "productName": "Wintube",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "com.wintube.app",
   "build": {
     "beforeDevCommand": "npm run dev",

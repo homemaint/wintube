@@ -16,15 +16,30 @@ const WEB_CLIENT_VERSION: &str = "2.20240726.00.00";
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
+/// One page of search results plus the token for the next page.
+pub struct SearchPage {
+    pub cards: Vec<VideoCard>,
+    pub continuation: Option<String>,
+}
+
 /// Search YouTube (InnerTube /search). Returns lightweight cards for the grid.
 pub async fn search(query: &str) -> Result<Vec<VideoCard>, String> {
+    Ok(search_page(query, None).await?.cards)
+}
+
+/// One page of /search results. `continuation` comes from the previous
+/// page's `continuationItemRenderer`; `None` fetches the first page.
+pub async fn search_page(
+    query: &str,
+    continuation: Option<&str>,
+) -> Result<SearchPage, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "context": {
             "client": {
                 "clientName": "WEB",
@@ -35,6 +50,9 @@ pub async fn search(query: &str) -> Result<Vec<VideoCard>, String> {
         },
         "query": query,
     });
+    if let Some(token) = continuation {
+        body["continuation"] = serde_json::json!(token);
+    }
 
     // DNS to youtube.com is flaky on some networks, so a single transport
     // error should not cost the user the whole search.
@@ -60,13 +78,15 @@ pub async fn search(query: &str) -> Result<Vec<VideoCard>, String> {
             Ok(json) => {
                 let mut renderers = Vec::new();
                 collect_video_renderers(&json, &mut renderers);
-                let mut cards: Vec<VideoCard> =
+                let cards: Vec<VideoCard> =
                     renderers.iter().filter_map(parse_card).collect();
-                cards.truncate(20);
-                if cards.is_empty() {
+                // A /search page carries ~20-30 videos plus channel/playlist
+                // items; keep everything — the frontend paginates (Load more).
+                let continuation = find_continuation(&json);
+                if cards.is_empty() && continuation.is_none() {
                     return Err("InnerTube returned no video results".to_string());
                 }
-                return Ok(cards);
+                return Ok(SearchPage { cards, continuation });
             }
             Err(e) => {
                 last_err = e;
@@ -77,6 +97,32 @@ pub async fn search(query: &str) -> Result<Vec<VideoCard>, String> {
         }
     }
     Err(last_err)
+}
+
+/// Find the next-page token (`continuationItemRenderer`) in a search payload.
+fn find_continuation(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                if key == "continuationItemRenderer" {
+                    if let Some(token) = val
+                        .get("continuationEndpoint")
+                        .and_then(|e| e.get("continuationCommand"))
+                        .and_then(|c| c.get("token"))
+                        .and_then(|t| t.as_str())
+                    {
+                        return Some(token.to_string());
+                    }
+                }
+                if let Some(found) = find_continuation(val) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().filter_map(find_continuation).next(),
+        _ => None,
+    }
 }
 
 /// Walk the response and collect every `videoRenderer` object.
