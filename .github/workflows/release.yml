@@ -20,10 +20,13 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
-      - name: Set up Rust
+      # CI builds the MSVC target (Tauri's tested path for MSI/NSIS, and it
+      # avoids the MSVC/GNU `resource.lib` mismatch). Local dev uses the
+      # pinned GNU target from .cargo/config.toml + MinGW.
+      - name: Set up Rust (MSVC target)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: 'x86_64-pc-windows-gnu'
+          targets: 'x86_64-pc-windows-msvc'
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -35,35 +38,28 @@ jobs:
           echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $env:GITHUB_PATH
           echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
 
-      - name: Install MinGW (linker for gnu target)
-        run: |
-          choco install mingw -y
-          $mingw = 'C:\tools\mingw64\bin'
-          if (Test-Path $mingw) { echo $mingw >> $env:GITHUB_PATH }
-          $env:PATH = "$mingw;$env:PATH"
-
       - name: Fetch yt-dlp sidecar
         run: |
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           New-Item -ItemType Directory -Force src-tauri/sidecars | Out-Null
-          Invoke-WebRequest https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile src-tauri/binaries/yt-dlp-x86_64-pc-windows-gnu.exe
-          Copy-Item src-tauri/binaries/yt-dlp-x86_64-pc-windows-gnu.exe src-tauri/binaries/yt-dlp.exe
-          Copy-Item src-tauri/binaries/yt-dlp-x86_64-pc-windows-gnu.exe src-tauri/sidecars/yt-dlp.exe
+          Invoke-WebRequest https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe
+          Copy-Item src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe src-tauri/binaries/yt-dlp.exe
+          Copy-Item src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe src-tauri/sidecars/yt-dlp.exe
           .\src-tauri\binaries\yt-dlp.exe --version
 
       - name: Install frontend deps
         run: npm ci
 
       - name: Build Tauri bundle
-        run: npx tauri build
+        run: npx tauri build --target x86_64-pc-windows-msvc
 
       - name: Upload MSI + NSIS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Wintube-Windows-x64
           path: |
-            target/x86_64-pc-windows-gnu/release/bundle/msi/*.msi
-            target/x86_64-pc-windows-gnu/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           if-no-files-found: error
 
       - name: Attach to GitHub Release
@@ -71,5 +67,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/x86_64-pc-windows-gnu/release/bundle/msi/*.msi
-            target/x86_64-pc-windows-gnu/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
