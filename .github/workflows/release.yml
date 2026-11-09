@@ -46,8 +46,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           New-Item -ItemType Directory -Force src-tauri/sidecars | Out-Null
-          Invoke-WebRequest https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile src-tauri/binaries/yt-dlp.exe
-          Copy-Item src-tauri/binaries/yt-dlp.exe src-tauri/sidecars/yt-dlp.exe
+          Invoke-WebRequest https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile src-tauri/binaries/yt-dlp-x86_64-pc-windows-gnu.exe
+          Copy-Item src-tauri/binaries/yt-dlp-x86_64-pc-windows-gnu.exe src-tauri/binaries/yt-dlp.exe
+          Copy-Item src-tauri/binaries/yt-dlp-x86_64-pc-windows-gnu.exe src-tauri/sidecars/yt-dlp.exe
           .\src-tauri\binaries\yt-dlp.exe --version
 
       - name: Install frontend deps
