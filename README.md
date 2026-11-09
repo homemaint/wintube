@@ -43,11 +43,25 @@ WinTube is for you.
 
 ## Screenshots
 
-| Home / Search | Downloads | Watch |
-| --- | --- | --- |
-| *Home grid with trending videos* | *Progress + ETA in the Downloads page* | *Player with quality/codec picker* |
+### Home — YouTube-like browse grid, no ads
 
-> Screenshots are on the Releases page and in the GitHub social preview. Drop yours into `docs/screenshots/` and link them here.
+![WinTube Home — trending video grid, no ads](docs/screenshots/home.png)
+
+### Watch — player with quality/codec picker + Download button
+
+![WinTube Watch — player, quality picker, Download](docs/screenshots/watch.png)
+
+### Downloads — progress, ETA, and Done state
+
+![WinTube Downloads — progress bar with ETA](docs/screenshots/downloads.png)
+
+### History — resume watch history
+
+![WinTube History — recently watched videos](docs/screenshots/history.png)
+
+### Settings — download folder, quality, SponsorBlock, diagnostics
+
+![WinTube Settings — download folder, defaults, sidecar diagnostics](docs/screenshots/settings.png)
 
 ## Quick start
 
