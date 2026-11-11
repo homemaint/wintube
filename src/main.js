@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+const VERSION = '0.1.7';
+
 const QUALITIES = [
   {v:'auto',label:'Auto (best)'},{v:'4320p',label:'4320p · 8K'},{v:'2160p',label:'2160p · 4K'},
   {v:'1440p',label:'1440p · QHD'},{v:'1080p',label:'1080p · FHD'},{v:'720p',label:'720p · HD'},
@@ -62,7 +64,7 @@ function shell(main){
   $('#app').innerHTML = `
   <header class="topbar">
     <button id="nav-back" title="Back (Alt+Left)" ${navStack.length?'':'hidden'} style="font-size:18px;padding:6px 12px">&larr;</button>
-    <div class="logo">Win<span>tube</span></div>
+    <div class="logo">Win<span>tube</span><span style="font-size:12px;color:#aaa;vertical-align:middle;margin-left:6px">v${VERSION}</span></div>
     <input id="q" placeholder="Search — press /"/> <button class="primary" id="go">Search</button>
     <span style="flex:1"></span>
     <button id="dl-btn">Downloads <span id="dl-n"></span></button>
@@ -114,6 +116,8 @@ const errorBox = msg => `<div class="errbox"><strong>Search failed</strong><p>${
 
 async function render(){
   const token = ++renderToken;
+  // Stop hidden audio when leaving the watch page.
+  const pa = $('#pa'); if(pa && route.name!=='watch') pa.pause();
   if(route.name!=='downloads') stopDownloadsRefresh();
   try{
     if(route.name==='home' || route.name==='search'){
@@ -192,9 +196,14 @@ async function watchHTML(id){
   <div class="watch">
     <div>
       <video id="v" controls autoplay src="${esc(prog)}"></video>
+      <audio id="pa" preload="auto"></audio>
       <h2 style="margin:12px 0 4px">${esc(vid.title)}</h2>
       <div class="muted">${esc(vid.channel)} · ${vid.view_count??''} views · ${esc(vid.upload_date||'')}${dur?' · '+dur:''}</div>
       <div class="row" style="margin-top:10px">
+        <span class="muted">Playback</span>
+        <select id="pb-q" disabled><option>Loading…</option></select>
+        <button id="pb-retry" hidden title="Retry HD stream resolution">Retry HD</button>
+        <span class="muted">Download</span>
         <select id="q-sel">${QUALITIES.map(q=>`<option value="${q.v}" ${settings.default_quality===q.v?'selected':''}>${q.label}</option>`).join('')}</select>
         <select id="c-sel">${CODECS.map(c=>`<option value="${c.v}" ${settings.default_codec===c.v?'selected':''}>${c.label}</option>`).join('')}</select>
         <button class="primary" id="dl">⬇ Download</button>
@@ -211,6 +220,118 @@ async function watchHTML(id){
       <div class="muted" style="max-height:300px;overflow:auto">${info.formats.slice(0,30).map(f=>`${esc(f.quality_label||f.format_id)} · ${esc(f.ext)} · ${f.height?f.height+'p':''}<br/>`).join('')}</div>
     </aside>
   </div>`;
+}
+
+// Selectable playback quality. Above 360p YouTube serves video-only and
+// audio-only streams, so the player runs in "dual" mode: the muted <video>
+// carries pixels and a hidden <audio> carries sound, synced on every
+// play/pause/seek. Progressive (360p) stays as the fallback.
+let pbStreams = null;
+function pbLog(m){ api('log_line',{message:`[playback] ${m}`}).catch(()=>{}); }
+async function bindPlayback(videoId){
+  const sel = $('#pb-q'), v = $('#v'), a = $('#pa'), retry = $('#pb-retry');
+  if(!sel || !v || !a) return;
+  const progressiveSrc = v.src;
+  if(retry) retry.hidden = true;
+
+  const showFallback = (reason)=>{
+    sel.innerHTML = '<option>360p only (HD unavailable)</option>';
+    sel.title = `HD unavailable: ${reason}`;
+    sel.disabled = true;
+    if(retry){ retry.hidden = false; retry.onclick = ()=>render(); }
+  };
+
+  let streams;
+  try{ streams = await api('get_playback_streams',{videoId}); }
+  catch(e){ pbLog(`streams failed: ${e}`); showFallback(String(e)); return; }
+  if(!streams.video?.length || !streams.audio_url){
+    pbLog(`streams incomplete video=${streams.video?.length||0} audio=${!!streams.audio_url}`);
+    showFallback('no adaptive streams');
+    return;
+  }
+  pbStreams = streams;
+  sel.disabled = false;
+  sel.title = '';
+  sel.innerHTML = streams.video.map(s=>`<option value="${s.height}">${s.height}p</option>`).join('');
+  sel.value = String(streams.video[streams.video.length - 1].height);
+  if(retry) retry.hidden = true;
+
+  let dual = false;
+  let audioLoaded = false;
+  let watchTimer = null;
+  let reverted = false;
+
+  const playAudio = ()=>{ if(dual && !v.paused) a.play().catch(err=>pbLog(`audio play rejected: ${err}`)); };
+  const syncAudioVolume = ()=>{ a.volume = v.volume; a.muted = v.muted; };
+  const revertToProgressive = (reason)=>{
+    if(!dual || reverted) return;
+    reverted = true;
+    dual = false;
+    clearTimeout(watchTimer);
+    pbLog(`revert to progressive: ${reason}`);
+    a.pause();
+    a.removeAttribute('src');
+    a.load();
+    audioLoaded = false;
+    try{ v.pause(); }catch(e){}
+    v.removeAttribute('src');
+    v.load();
+    v.src = progressiveSrc;
+    v.play().catch(()=>{});
+    showFallback(reason);
+  };
+
+  // Attach error tracking before the first dual source is assigned so a
+  // fast Format error is not missed.
+  v.addEventListener('error', ()=>{
+    pbLog(`video error code=${v.error?.code ?? 'none'} msg=${v.error?.message ?? 'none'}`);
+    if(dual && v.error?.code === 4) revertToProgressive('code 4');
+  }, true);
+  a.addEventListener('error', ()=>pbLog(`audio error code=${a.error?.code ?? 'none'} msg=${a.error?.message ?? 'none'}`), true);
+
+  const enableDual = (height)=>{
+    const step = streams.video.find(s=>s.height===height) || streams.video[streams.video.length - 1];
+    if(!step) return;
+    dual = true;
+    reverted = false;
+    if(!audioLoaded){ a.src = streams.audio_url; audioLoaded = true; }
+    syncAudioVolume();
+    const t = Number.isFinite(v.currentTime) ? v.currentTime : 0;
+    const wasPlaying = !v.paused;
+    pbLog(`dual on ${step.height}p at ${t.toFixed(2)}s`);
+    v.src = step.url;
+    v.addEventListener('loadedmetadata', ()=>{
+      pbLog(`dual metadata h=${step.height} readyState=${v.readyState} dur=${v.duration}`);
+      try{ v.currentTime = t; }catch(e){}
+      try{ a.currentTime = t; }catch(e){}
+      if(wasPlaying) v.play().catch(()=>{});
+      playAudio();
+    }, {once:true});
+    // If the video-only stream never becomes playable, fall back to the
+    // progressive 360p stream so the user is never stuck on a black frame.
+    clearTimeout(watchTimer);
+    watchTimer = setTimeout(()=>{
+      if(dual && v.readyState < 3 && !v.paused){
+        revertToProgressive(`stalled readyState=${v.readyState} networkState=${v.networkState}`);
+      }
+    }, 10000);
+  };
+
+  v.addEventListener('play', playAudio);
+  v.addEventListener('playing', playAudio);
+  // WebView2 autoplay policy may reject the audio element until the first
+  // user gesture; start it on the first click anywhere instead.
+  document.addEventListener('click', playAudio, {once:true});
+  v.addEventListener('pause', ()=>a.pause());
+  v.addEventListener('volumechange', syncAudioVolume);
+  v.addEventListener('seeking', ()=>{ if(dual && Math.abs(a.currentTime - v.currentTime) > 0.25) a.currentTime = v.currentTime; });
+  v.addEventListener('seeked', ()=>{ if(dual) a.currentTime = v.currentTime; });
+  v.addEventListener('timeupdate', ()=>{ if(dual && !a.paused && Math.abs(a.currentTime - v.currentTime) > 0.4) a.currentTime = v.currentTime; });
+  a.addEventListener('ended', ()=>v.pause());
+  sel.onchange = ()=>enableDual(+sel.value);
+
+  // Auto-upgrade to the best available quality once streams are ready.
+  enableDual(+sel.value);
 }
 
 async function historyHTML(){
@@ -341,8 +462,9 @@ function bindMain(){
       const lf=$('#logfile'); if(lf) lf.textContent=d.log_file;
     }catch(e){ if(out) out.textContent='Diagnostics failed: '+(e?.message||e); }
   };
-  // save history + sponsorblock on watch
+  // save history + sponsorblock + playback quality on watch
   if(route.name==='watch' && currentInfo){
+    bindPlayback(route.id);
     api('save_history',{entry:{video_id:route.id,title:currentInfo.video.title,channel:currentInfo.video.channel,thumbnail:currentInfo.video.thumbnail,position:0,duration:currentInfo.video.duration||0,watched_at:new Date().toISOString()}}).catch(()=>{});
     if(settings.auto_sponsorblock) api('get_sponsor_segments',{videoId:route.id}).then(segs=>{
       if(segs?.length){ const v=$('#v'); if(!v) return; const iv=setInterval(()=>{ if(!document.body.contains(v)){clearInterval(iv);return;} for(const s of segs){ const seg=s.segment||s; if(seg && v.currentTime>=seg[0] && v.currentTime<seg[1]){ v.currentTime=seg[1]; } } },500); }

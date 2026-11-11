@@ -1,4 +1,20 @@
-# Changelog
+﻿# Changelog
+
+## 0.1.7 - 2026-11-11
+
+- **Selectable playback quality (the big one):** the watch page now has a 144p–1080p quality picker instead of being locked to 360p. YouTube serves video-only + audio-only adaptive streams above 360p, so playback now runs in a dual-element mode (muted video element + hidden audio element, kept in sync for play/pause/seek/volume/mute and drift correction) with an automatic fallback to the progressive 360p stream if the adaptive stream stalls or WebView2 refuses it (error code 4).
+- **Stream resolution via InnerTube VISIONOS client:** videos where YouTube enables SABR-only streaming only expose a direct progressive 360p URL to yt-dlp. The player API's VISIONOS client still returns direct adaptive URLs for the full AVC ladder (144p–1080p) plus AAC audio when a `visitorData` session is supplied, so `get_playback_streams` now resolves through InnerTube first (~0.7–1s) with yt-dlp as the fallback. The signed URLs stream through a new `wintube-media` custom protocol relay (8 MiB range chunks, HEAD/416 handling, Content-Range) so the URLs never leave the app.
+- **Retry button:** if HD can't be resolved, the picker shows "360p only (HD unavailable)" with a Retry HD button instead of a dead control.
+- **Version label:** the top bar now shows the app version next to the logo (`WinTube-v0.1.7`).
+
+## 0.1.6 - 2026-11-10
+
+- **Search pagination:** "Load more" button on search results (accumulated pages, 20 cards per page, cap raised from 12).
+
+## 0.1.5 - 2026-11-09
+
+- **Back navigation:** topbar back arrow + Alt+Left shortcut; going back from a video returns to the originating search/history page (search results restored from cache, no re-fetch).
+- Docs: screenshots added (home, watch, downloads, history, settings); LICENSE is pure MIT (third-party notices moved to docs/LICENSE-NOTICE.md).
 
 ## 0.1.4 — 2026-11-08
 
@@ -23,3 +39,4 @@
 ## 0.1.0
 
 - Initial release: Tauri 2 + WebView2, InnerTube search, yt-dlp sidecar, `wintube-mux` pure-Rust remux, History/Settings/SponsorBlock.
+

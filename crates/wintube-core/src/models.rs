@@ -76,6 +76,26 @@ impl Format {
     }
 }
 
+/// One quality step of the selectable playback ladder: a video-only AVC
+/// stream at this height, paired with the separate audio-only stream
+/// (`audio_url`) for in-player sync playback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackStep {
+    pub height: u32,
+    pub width: u32,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackStreams {
+    /// Video-only AVC ladder, ascending by height.
+    pub video: Vec<PlaybackStep>,
+    /// Best AAC audio-only stream (pairs with every video step).
+    pub audio_url: Option<String>,
+    /// Full duration from the media metadata (drives the seekbar).
+    pub duration: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayInfo {
     pub video: Video,

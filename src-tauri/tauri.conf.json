@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "productName": "Wintube",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "identifier": "com.wintube.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' https: data:; media-src 'self' https: blob:; connect-src 'self' https: http://localhost:5173 ws:;"
+      "csp": "default-src 'self'; img-src 'self' https: data:; media-src 'self' https: blob: wintube-media: http://wintube-media.localhost; connect-src 'self' https: wintube-media: http://wintube-media.localhost http://localhost:5173 ws:;"
     }
   },
   "bundle": {

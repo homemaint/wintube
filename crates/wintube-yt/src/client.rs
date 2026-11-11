@@ -149,6 +149,83 @@ impl YtClient {
         Ok(parsed.into())
     }
 
+    /// The selectable playback ladder: video-only AVC at every height plus
+    /// one AAC audio stream, for synced dual-element playback. Resolved with
+    /// the default client (the same one downloads use), which exposes the
+    /// full ladder without a JS runtime. No merging — the frontend plays the
+    /// video muted and the audio on their own clocks.
+    pub async fn get_playback_streams(
+        &self,
+        video_id: &str,
+    ) -> Result<wintube_core::PlaybackStreams, wintube_core::CoreError> {
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        let out = tokio::process::Command::new(&self.ytdlp_path)
+            .args([
+                "-j",
+                "--no-playlist",
+                "--no-warnings",
+                "--socket-timeout",
+                "30",
+                &url,
+            ])
+            .output()
+            .await
+            .map_err(|e| wintube_core::CoreError::SidecarMissing(format!("yt-dlp: {e}")))?;
+        if !out.status.success() {
+            return Err(wintube_core::CoreError::YtDlp(
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            ));
+        }
+        let parsed: YtDlpOut = serde_json::from_slice(&out.stdout)?;
+
+        let mut video: Vec<wintube_core::PlaybackStep> = Vec::new();
+        let mut best_tbr: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        let mut audio_url: Option<String> = None;
+        let mut best_audio_score = f64::NEG_INFINITY;
+
+        for f in &parsed.formats {
+            let v = f.vcodec.as_deref().unwrap_or("none");
+            let a = f.acodec.as_deref().unwrap_or("none");
+            if v != "none" && a == "none" {
+                // Video-only: keep the best (highest tbr) AVC per height.
+                if v.starts_with("avc") {
+                    if let (Some(h), Some(w)) = (f.height, f.width) {
+                        let score = f.tbr.unwrap_or(0.0);
+                        let is_better = best_tbr.get(&h).map(|s| score > *s).unwrap_or(true);
+                        if is_better {
+                            best_tbr.insert(h, score);
+                            let step = wintube_core::PlaybackStep {
+                                height: h,
+                                width: w,
+                                url: f.url.clone(),
+                            };
+                            match video.iter_mut().find(|s| s.height == h) {
+                                Some(slot) => *slot = step,
+                                None => video.push(step),
+                            }
+                        }
+                    }
+                }
+            } else if a != "none" && v == "none" {
+                // Audio-only: prefer AAC/m4a, then the highest bitrate.
+                let score = f.tbr.unwrap_or(0.0)
+                    + if f.ext == "m4a" || a.starts_with("mp4a") { 1000.0 } else { 0.0 };
+                if score > best_audio_score {
+                    best_audio_score = score;
+                    audio_url = Some(f.url.clone());
+                }
+            }
+        }
+
+        video.sort_by_key(|s| s.height);
+        let duration = parsed.duration.map(|d| d as u64);
+        Ok(wintube_core::PlaybackStreams {
+            video,
+            audio_url,
+            duration,
+        })
+    }
+
     /// Flat playlist info for channel/playlist grids.
     pub async fn get_flat(&self, url: &str) -> Result<serde_json::Value, wintube_core::CoreError> {
         let out = tokio::process::Command::new(&self.ytdlp_path)

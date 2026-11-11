@@ -28,6 +28,49 @@ pub struct SearchResult {
 }
 
 #[tauri::command]
+pub async fn get_playback_streams(
+    video_id: String,
+) -> Result<wintube_core::PlaybackStreams, String> {
+    let started = std::time::Instant::now();
+    // InnerTube first: the VISIONOS client still exposes direct adaptive URLs
+    // for videos where yt-dlp only sees the progressive 360p stream (the
+    // SABR-only experiment). yt-dlp stays as the fallback.
+    let streams = match wintube_yt::innertube::playback_streams(&video_id).await {
+        Ok(s) => {
+            crate::log_line(&format!(
+                "get_playback_streams id={video_id} source=innertube steps={} audio={} elapsed={}ms",
+                s.video.len(),
+                s.audio_url.is_some(),
+                started.elapsed().as_millis()
+            ));
+            s
+        }
+        Err(e) => {
+            crate::log_line(&format!(
+                "get_playback_streams id={video_id} innertube failed ({e}); falling back to yt-dlp"
+            ));
+            let (yt, _ff) = wintube_download::ensure_sidecars();
+            YtClient::new(yt)
+                .get_playback_streams(&video_id)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
+    let streams = crate::relay::rewrite(streams);
+    crate::log_line(&format!(
+        "get_playback_streams id={video_id} steps={} audio={}",
+        streams.video.len(),
+        streams.audio_url.is_some()
+    ));
+    Ok(streams)
+}
+
+#[tauri::command]
+pub async fn log_line(message: String) {
+    crate::log_line(&message);
+}
+
+#[tauri::command]
 pub async fn search_videos(query: String, continuation: Option<String>) -> Result<SearchResult, String> {
     let started = std::time::Instant::now();
     // Fast path: the InnerTube JSON API. No subprocess, no sidecar, ~10x

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod relay;
 
 use std::sync::Mutex;
 
@@ -51,8 +52,13 @@ pub fn main() {
             downloads: wintube_download::DownloadManager::new(),
             settings: Mutex::new(settings),
         })
+        .register_asynchronous_uri_scheme_protocol("wintube-media", |_ctx, request, responder| {
+            crate::relay::handle(request, responder);
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_play_info,
+            commands::get_playback_streams,
+            commands::log_line,
             commands::search_videos,
             commands::get_history,
             commands::save_history,

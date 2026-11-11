@@ -6,7 +6,9 @@
 //! formats, deciphering and downloads).
 
 use serde_json::Value;
-use wintube_core::VideoCard;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use wintube_core::{PlaybackStep, PlaybackStreams, VideoCard};
 
 /// The public InnerTube key used by the YouTube web client. It is shipped in
 /// every web page and grants no account access — it only identifies the
@@ -220,4 +222,276 @@ fn parse_duration(text: &str) -> Option<u64> {
 /// region-specific trending params are wired up.
 pub async fn trending() -> Result<Vec<VideoCard>, String> {
     search("trending music").await
+}
+
+// ---------------------------------------------------------------------------
+// Playback ladder via the InnerTube player API
+// ---------------------------------------------------------------------------
+//
+// yt-dlp only surfaces a direct URL for the progressive 360p stream on videos
+// where YouTube has enabled SABR-only streaming. The VISIONOS player client
+// still returns ordinary adaptive URLs for the whole AVC ladder, but only when
+// the request carries a visitor session (`visitorData`). We fetch that session
+// from the YouTube homepage once, cache it, and ask VISIONOS for the ladder.
+// This replaces the old yt-dlp-based `get_playback_streams` fast path; yt-dlp
+// remains the fallback for videos the VISIONOS client cannot play.
+
+const VISIONOS_CLIENT_VERSION: &str = "1.02";
+const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
+struct VisitorCache {
+    value: String,
+    fetched: Instant,
+}
+
+static VISITOR: OnceLock<std::sync::Mutex<Option<VisitorCache>>> = OnceLock::new();
+const VISITOR_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+fn visitor_slot() -> &'static std::sync::Mutex<Option<VisitorCache>> {
+    VISITOR.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Return a cached visitor session, refreshing it when stale or forced.
+async fn visitor_data(force: bool) -> Option<String> {
+    {
+        let guard = visitor_slot().lock().ok()?;
+        if !force {
+            if let Some(c) = guard.as_ref() {
+                if c.fetched.elapsed() < VISITOR_TTL {
+                    return Some(c.value.clone());
+                }
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent(VISIONOS_UA)
+        .build()
+        .ok()?;
+    let html = client
+        .get("https://www.youtube.com/")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Encoding", "identity")
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    let value = extract_visitor(&html)?;
+    if let Ok(mut guard) = visitor_slot().lock() {
+        *guard = Some(VisitorCache {
+            value: value.clone(),
+            fetched: Instant::now(),
+        });
+    }
+    Some(value)
+}
+
+fn extract_visitor(html: &str) -> Option<String> {
+    let needle = "\"VISITOR_DATA\":\"";
+    let start = html.find(needle)? + needle.len();
+    let rest = &html[start..];
+    let end = rest.find('"')?;
+    Some(percent_decode(&rest[..end]))
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Resolve the full AVC + AAC playback ladder through the VISIONOS client.
+/// Returns an error when YouTube refuses the session or serves SABR-only
+/// formats; callers should then fall back to yt-dlp's progressive stream.
+pub async fn playback_streams(video_id: &str) -> Result<PlaybackStreams, String> {
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        let visitor = match visitor_data(attempt > 0).await {
+            Some(v) => v,
+            None => {
+                last_err = "could not obtain a YouTube visitor session".to_string();
+                break;
+            }
+        };
+        match fetch_player(video_id, &visitor).await {
+            Ok(streams) => return Ok(streams),
+            Err(e) => {
+                last_err = e;
+                if attempt == 0 {
+                    tokio::time::sleep(Duration::from_millis(350)).await;
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
+async fn fetch_player(video_id: &str, visitor: &str) -> Result<PlaybackStreams, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .user_agent(VISIONOS_UA)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": "VISIONOS",
+                "clientVersion": VISIONOS_CLIENT_VERSION,
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice17,1",
+                "osName": "visionOS",
+                "osVersion": "26.5.23O471",
+                "hl": "en",
+                "gl": "US",
+                "visitorData": visitor,
+            }
+        },
+        "videoId": video_id,
+        "contentCheckOk": true,
+        "racyCheckOk": true,
+    });
+
+    let resp = client
+        .post(format!(
+            "https://www.youtube.com/youtubei/v1/player?key={WEB_API_KEY}"
+        ))
+        .header("X-Goog-Visitor-Id", visitor)
+        .header("X-YouTube-Client-Name", "101")
+        .header("X-YouTube-Client-Version", VISIONOS_CLIENT_VERSION)
+        .header("Origin", "https://www.youtube.com")
+        .header("Referer", "https://www.youtube.com/")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("InnerTube player request failed: {e}"))?;
+
+    let status = resp.status();
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("InnerTube player response was not JSON: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("InnerTube player HTTP {status}"));
+    }
+
+    let playability = json
+        .pointer("/playabilityStatus/status")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if playability != "OK" {
+        let reason = json
+            .pointer("/playabilityStatus/reason")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return Err(format!("InnerTube player {playability}: {reason}"));
+    }
+
+    let formats = json
+        .pointer("/streamingData/adaptiveFormats")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "InnerTube returned no adaptive formats".to_string())?;
+
+    let mut video_by_height: std::collections::HashMap<u32, (f64, PlaybackStep)> =
+        std::collections::HashMap::new();
+    let mut best_aac: Option<(f64, String)> = None;
+    let mut best_audio: Option<(f64, String)> = None;
+
+    for f in formats {
+        let Some(url) = f.get("url").and_then(Value::as_str) else {
+            continue;
+        };
+        let mime = f.get("mimeType").and_then(Value::as_str).unwrap_or("");
+        let bitrate = f
+            .get("bitrate")
+            .and_then(Value::as_f64)
+            .or_else(|| f.get("averageBitrate").and_then(Value::as_f64))
+            .unwrap_or(0.0);
+        let height = f.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let width = f.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+
+        if mime.starts_with("video/mp4") && mime.contains("avc1") && height > 0 {
+            let better = video_by_height
+                .get(&height)
+                .map(|(b, _)| bitrate > *b)
+                .unwrap_or(true);
+            if better {
+                video_by_height.insert(
+                    height,
+                    (
+                        bitrate,
+                        PlaybackStep {
+                            height,
+                            width,
+                            url: url.to_string(),
+                        },
+                    ),
+                );
+            }
+        } else if mime.starts_with("audio/") {
+            if mime.starts_with("audio/mp4") && mime.contains("mp4a") {
+                if best_aac.as_ref().map(|(b, _)| bitrate > *b).unwrap_or(true) {
+                    best_aac = Some((bitrate, url.to_string()));
+                }
+            }
+            if best_audio.as_ref().map(|(b, _)| bitrate > *b).unwrap_or(true) {
+                best_audio = Some((bitrate, url.to_string()));
+            }
+        }
+    }
+
+    let mut video: Vec<PlaybackStep> = video_by_height
+        .into_values()
+        .map(|(_, step)| step)
+        .collect();
+    video.sort_by_key(|s| s.height);
+    if video.is_empty() {
+        return Err("InnerTube returned no AVC video formats".to_string());
+    }
+    let audio_url = best_aac.or(best_audio).map(|(_, url)| url);
+    if audio_url.is_none() {
+        return Err("InnerTube returned no audio formats".to_string());
+    }
+
+    let duration = json
+        .pointer("/videoDetails/lengthSeconds")
+        .and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .or_else(|| v.as_u64())
+        });
+
+    Ok(PlaybackStreams {
+        video,
+        audio_url,
+        duration,
+    })
 }
